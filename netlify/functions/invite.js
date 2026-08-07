@@ -11,9 +11,10 @@
 //   BREVO_API_KEY
 //   APP_BASE_URL   (e.g. https://prepdo.netlify.app)
 
-const { supaGet, supaPost, generateToken, hashToken, respond } = require('./_lib.js');
+const { supaGet, supaPost, generateToken, hashToken, respond, handleOptions } = require('./_lib.js');
 
 exports.handler = async function (event) {
+  if (event.httpMethod === 'OPTIONS') return handleOptions();
   if (event.httpMethod !== 'POST') {
     return respond(405, { ok: false, message: 'Method Not Allowed' });
   }
@@ -30,13 +31,17 @@ exports.handler = async function (event) {
     return respond(400, { ok: false, message: 'Provide at least one invite: { name, email, key_type }.' });
   }
 
-  // If invited_by is provided, confirm that person is actually an admin.
-  // (Skip this check only for the one-time first-admin bootstrap, invited_by = null.)
-  if (invited_by) {
-    const inviter = await supaGet(`team_members?id=eq.${invited_by}&select=key_type`);
-    if (!inviter.length || inviter[0].key_type !== 'admin') {
-      return respond(403, { ok: false, message: 'Only an admin can invite team members.' });
+  try {
+    // If invited_by is provided, confirm that person is actually an admin.
+    // (Skip this check only for the one-time first-admin bootstrap, invited_by = null.)
+    if (invited_by) {
+      const inviter = await supaGet(`team_members?id=eq.${invited_by}&select=key_type`);
+      if (!inviter.length || inviter[0].key_type !== 'admin') {
+        return respond(403, { ok: false, message: 'Only an admin can invite team members.' });
+      }
     }
+  } catch (err) {
+    return respond(500, { ok: false, message: 'Server error checking inviter: ' + err.message });
   }
 
   const results = [];
@@ -82,19 +87,25 @@ async function sendActivationEmail({ name, email, activationLink }) {
     return { sent: false, reason: 'BREVO_API_KEY not configured', activationLink };
   }
 
-  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-    method: 'POST',
-    headers: {
-      'api-key': BREVO_API_KEY,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      sender: { name: 'PREPDO Team', email: 'noreply@lmi-india.in' },
-      to: [{ email, name }],
-      subject: 'Welcome to PREPDO — Activate Your Account',
-      htmlContent: `<p>Hi ${name},</p><p>You have been invited to PREPDO AI Sales Coach. Click below to activate your account:</p><p><a href="${activationLink}">${activationLink}</a></p><p>This link expires in 7 days.</p><p>Regards,<br>PREPDO Team</p>`
-    })
-  });
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        sender: { name: 'PREPDO Team', email: 'noreply@lmi-india.in' },
+        to: [{ email, name }],
+        subject: 'Welcome to PREPDO — Activate Your Account',
+        htmlContent: `<p>Hi ${name},</p><p>You have been invited to PREPDO AI Sales Coach. Click below to activate your account:</p><p><a href="${activationLink}">${activationLink}</a></p><p>This link expires in 7 days.</p><p>Regards,<br>PREPDO Team</p>`
+      })
+    });
 
-  return { sent: res.ok, statusCode: res.status };
+    return { sent: res.ok, statusCode: res.status, activationLink };
+  } catch (err) {
+    // Even if Brevo itself fails/is misconfigured, don't crash the whole
+    // invite — the link is still returned so it can be shared manually.
+    return { sent: false, reason: err.message, activationLink };
+  }
 }
