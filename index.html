@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PREPDO — AI Sales Coach</title>
+<style>
+  :root {
+    --ink: #14213D;
+    --ink-soft: #3A4B78;
+    --paper: #F7F7F5;
+    --accent: #C87A3E;
+    --accent-soft: #E9C9AC;
+    --line: #DCDCD6;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--paper);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+  }
+  .card {
+    width: 100%;
+    max-width: 380px;
+    padding: 48px 36px 36px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    box-shadow: 0 1px 3px rgba(20,33,61,0.06);
+  }
+  .wordmark { text-align: center; margin-bottom: 40px; }
+  .wordmark .prepdo {
+    display: block; font-size: 40px; font-weight: 800;
+    letter-spacing: 0.5px; color: var(--ink); line-height: 1;
+  }
+  .wordmark .prepdo span { color: var(--accent); }
+  .wordmark .subline {
+    display: block; margin-top: 8px; font-size: 12px; font-weight: 600;
+    letter-spacing: 3px; text-transform: uppercase; color: var(--ink-soft);
+  }
+  label {
+    display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
+    text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px;
+  }
+  input[type="email"] {
+    width: 100%; padding: 12px 14px; font-size: 15px;
+    border: 1px solid var(--line); border-radius: 3px;
+    background: var(--paper); color: var(--ink);
+  }
+  input[type="email"]:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  button {
+    width: 100%; margin-top: 20px; padding: 13px; font-size: 14px; font-weight: 700;
+    letter-spacing: 0.5px; text-transform: uppercase; color: #fff; background: var(--ink);
+    border: none; border-radius: 3px; cursor: pointer; transition: background 0.15s ease;
+  }
+  button:hover { background: var(--ink-soft); }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .status { margin-top: 16px; font-size: 13px; text-align: center; color: var(--ink-soft); min-height: 18px; }
+  .status.error { color: #B23A3A; }
+  .status.success { color: #2E7D4F; }
+  .footer-note { margin-top: 28px; text-align: center; font-size: 11px; color: #9B9B94; }
+  .hidden { display: none; }
+  .spinner-msg { text-align: center; color: var(--ink-soft); font-size: 14px; }
+  .welcome { text-align: center; }
+  .welcome .name { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+  <div class="card">
+    <div class="wordmark">
+      <span class="prepdo">PREP<span>DO</span></span>
+      <span class="subline">AI Sales Coach</span>
+    </div>
+
+    <!-- Shown while resolving an activation/login link or a stored session -->
+    <div id="checking" class="spinner-msg">Checking your access...</div>
+
+    <!-- Shown once successfully signed in -->
+    <div id="welcomeScreen" class="welcome hidden">
+      <div class="name" id="welcomeName"></div>
+      <div style="color: var(--ink-soft); font-size: 14px;">You're signed in. (Rest of the app loads here.)</div>
+    </div>
+
+    <!-- Default: no session, no link — request a login link by email -->
+    <form id="requestLinkForm" class="hidden">
+      <label for="emailInput">Email</label>
+      <input type="email" id="emailInput" name="email" placeholder="you@company.com" autocomplete="email" required>
+      <button type="submit">Email me a login link</button>
+      <div class="status" id="requestStatus"></div>
+    </form>
+
+    <div class="footer-note">LMI India &middot; PREPDO v1.2</div>
+  </div>
+
+<script>
+  const API = '/.netlify/functions';
+  const $ = (id) => document.getElementById(id);
+
+  function showOnly(id) {
+    ['checking', 'welcomeScreen', 'requestLinkForm'].forEach(x => $(x).classList.toggle('hidden', x !== id));
+  }
+
+  function showWelcome(name) {
+    $('welcomeName').textContent = 'Welcome, ' + (name || 'there') + '.';
+    showOnly('welcomeScreen');
+  }
+
+  async function checkSession(token) {
+    try {
+      const res = await fetch(`${API}/check-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_token: token })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        localStorage.setItem('prepdo_session', token);
+        showWelcome(data.name);
+      } else {
+        localStorage.removeItem('prepdo_session');
+        showOnly('requestLinkForm');
+      }
+    } catch (e) {
+      showOnly('requestLinkForm');
+    }
+  }
+
+  async function activate(token) {
+    try {
+      const res = await fetch(`${API}/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        localStorage.setItem('prepdo_session', data.session_token);
+        // clean the token out of the URL so a refresh doesn't re-trigger activation
+        window.history.replaceState({}, '', window.location.pathname);
+        showWelcome(data.name);
+      } else {
+        showOnly('requestLinkForm');
+        $('requestStatus').textContent = data.message || 'This link is not valid.';
+        $('requestStatus').className = 'status error';
+      }
+    } catch (e) {
+      showOnly('requestLinkForm');
+    }
+  }
+
+  // Entry point: figure out which of the three states we're in.
+  (async function init() {
+    const params = new URLSearchParams(window.location.search);
+    const activateToken = params.get('activate');
+    const loginToken = params.get('login');
+    const storedSession = localStorage.getItem('prepdo_session');
+
+    if (activateToken) {
+      showOnly('checking');
+      await activate(activateToken);
+    } else if (loginToken) {
+      window.history.replaceState({}, '', window.location.pathname);
+      showOnly('checking');
+      await checkSession(loginToken);
+    } else if (storedSession) {
+      showOnly('checking');
+      await checkSession(storedSession);
+    } else {
+      showOnly('requestLinkForm');
+    }
+  })();
+
+  $('requestLinkForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    const email = $('emailInput').value.trim();
+    const statusEl = $('requestStatus');
+    statusEl.textContent = 'Sending...';
+    statusEl.className = 'status';
+
+    try {
+      const res = await fetch(`${API}/request-login-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await res.json();
+      statusEl.textContent = data.message || 'Check your email for a login link.';
+      statusEl.className = 'status success';
+    } catch (err) {
+      statusEl.textContent = 'Something went wrong — please try again.';
+      statusEl.className = 'status error';
+    }
+  });
+</script>
+
+</body>
+</html>
