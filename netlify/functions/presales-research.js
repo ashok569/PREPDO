@@ -1,22 +1,13 @@
 // PREPDO — presales-research.js
-// BUILD 5 | 2026-08-08
-// Redesigned around parallel mini-sessions, one per research topic,
-// instead of one call trying to cover everything with a shared,
-// limited search budget. Benefits:
-//   1. SPEED — mini-sessions run in parallel (Promise.allSettled), so
-//      total time is bounded by the slowest single mini-session, not
-//      the sum of all of them. Each is capped to 1 search, Haiku model,
-//      small max_tokens — realistically ~5-12s each, run concurrently.
-//      Comfortably under Netlify's 30s hard function-execution ceiling
-//      (the actual cause of the earlier timeouts — see BUILD 4 notes).
-//   2. QUALITY — each topic gets a dedicated, forced search rather than
-//      competing for a shared budget the model has to allocate itself.
-//      A single combined call might spend both its searches on "recent
-//      news" and never touch leadership or competitive position; here
-//      every topic is guaranteed at least one real look.
-// If one topic's mini-session fails, the others still succeed — a
-// partial result (with a note on what's missing) beats losing the
-// whole research step over one bad sub-call.
+// BUILD 6 | 2026-08-09
+// Confirmed working: the Build 5 parallel-mini-session redesign fixed
+// the timeout entirely — real research returned successfully on a real
+// company (iENERGIZER), 4 topics, well under Netlify's 30s ceiling.
+// This build: small fix — max_tokens bumped 400 → 700. Two topics were
+// getting cut off mid-sentence because 400 tokens was occasionally too
+// tight, not because of speed (this doesn't meaningfully affect timing,
+// since generation of a few hundred extra tokens on Haiku is fast, and
+// the topics still run in parallel).
 
 // /netlify/functions/presales-research.js
 //
@@ -67,7 +58,7 @@ async function researchTopic(topic, company_name, company_website) {
         content: `Company: ${company_name}\nWebsite: ${company_website || '(not provided)'}\n\nFind information specifically about: ${topic.focus}`
       }],
       tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }],
-      max_tokens: 400
+      max_tokens: 700
     });
     const text = extractText(claudeRes);
     return { key: topic.key, label: topic.label, ok: true, text: text || 'Nothing specific found on this topic.' };
