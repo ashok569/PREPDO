@@ -1,12 +1,24 @@
 <!DOCTYPE html>
 <!--
   PREPDO — app.html
-  BUILD 4 | 2026-08-08
-  Fixed: the api() helper now has a 45s client-side timeout (was hanging
-  forever on "Searching the web..." with no error, when the underlying
-  Netlify function timed out silently). Now always resolves to a clear
-  message either way, and the Confirmed Facts box stays editable so you
-  can proceed manually if research times out.
+  BUILD 5 | 2026-08-09
+  Four fixes from real user feedback after live testing:
+  1. Word export was plain/unstyled — now has a real title block
+     (PREPDO wordmark, company/contact/objective metadata) and PREPDO
+     colors, matching the polished look of hand-built reports.
+  2. Filenames now: CompanyName_Section_DD-MM-YYYY_vN.doc (version =
+     position in that prospect's report history, oldest = v1).
+  3. Fixed a real formatting bug: bold pseudo-headings (e.g.
+     "**EDM and success-bar calibration**") could run directly into the
+     next sentence with no line break. mdToHtml() now forces a paragraph
+     break around any line that's entirely a bold phrase, as a
+     defensive fix on top of the prompt-level fix in presales-generate
+     BUILD 10 (which now asks for real #### headers instead of bold).
+  4. New "Rerun with Additional Input" flow: once a report exists for a
+     prospect, the button no longer silently creates a duplicate on
+     re-click — it opens a box for new information, reuses the existing
+     Confirmed Facts (no redundant re-search), and lets the user layer
+     new details (e.g. a referral source) on top before regenerating.
 -->
 <html lang="en">
 <head>
@@ -184,10 +196,19 @@
     <div class="card" style="margin-top: 20px;">
       <div class="row" style="margin-bottom: 0;">
         <div>
-          <strong>Presales Prep</strong>
-          <div class="subtle">Research the account and generate a prep report before your meeting.</div>
+          <strong id="prepCardTitle">Presales Prep</strong>
+          <div class="subtle" id="prepCardSubtitle">Research the account and generate a prep report before your meeting.</div>
         </div>
         <button id="generatePrepBtn">Generate Presales Prep</button>
+      </div>
+      <div id="rerunInputBox" class="hidden" style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px;">
+        <label>Additional Information to Include</label>
+        <div class="subtle" style="margin-bottom: 8px;">E.g. a referral source, an updated contact, or anything new since the last report. This won't re-run web search — it adds to the existing Confirmed Facts, which you can still edit before generating.</div>
+        <textarea id="rerunAdditionalInput" style="min-height: 90px;"></textarea>
+        <div style="margin-top: 12px;">
+          <button id="rerunContinueBtn">Continue</button>
+          <button class="secondary" id="rerunCancelBtn" style="margin-left: 8px;">Cancel</button>
+        </div>
       </div>
     </div>
 
@@ -214,340 +235,4 @@
 
   <!-- ===================== VIEW: Presales Prep Step 2 (Full Report) ===================== -->
   <div id="view-report" class="hidden">
-    <span class="back-link" data-back="detail">&larr; Back to Prospect</span>
-    <h1>Presales Prep Report</h1>
-    <div id="reportLoading" class="spinner-msg">Generating your report — this can take a moment...</div>
-    <div id="reportResult" class="hidden">
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="detailed">Detailed</button>
-        <button class="tab-btn" data-tab="summary">Summary</button>
-        <button class="tab-btn" data-tab="keythings">Key Things</button>
-        <button class="tab-btn" data-tab="ponder">Points to Ponder</button>
-      </div>
-      <div class="tab-panel active" id="panel-detailed">
-        <div class="report-content" id="content-detailed"></div>
-        <button class="secondary small" data-save="detailed" style="margin-top: 16px;">Save as Word</button>
-      </div>
-      <div class="tab-panel" id="panel-summary">
-        <div class="report-content" id="content-summary"></div>
-        <button class="secondary small" data-save="summary" style="margin-top: 16px;">Save as Word</button>
-      </div>
-      <div class="tab-panel" id="panel-keythings">
-        <div class="report-content" id="content-keythings"></div>
-        <button class="secondary small" data-save="keythings" style="margin-top: 16px;">Save as Word</button>
-      </div>
-      <div class="tab-panel" id="panel-ponder">
-        <div class="report-content" id="content-ponder"></div>
-      </div>
-    </div>
-  </div>
-
-</main>
-
-<script>
-  const API = '/.netlify/functions';
-  const $ = (id) => document.getElementById(id);
-  const session = localStorage.getItem('prepdo_session');
-
-  if (!session) {
-    window.location.href = 'index.html';
-  }
-
-  let state = {
-    prospects: [],
-    currentProspect: null,
-    currentReports: [],
-    lastReport: null,
-    generatedFacts: ''
-  };
-
-  // ---------- View switching ----------
-  const VIEWS = ['view-list', 'view-new', 'view-detail', 'view-research', 'view-report'];
-  function showView(name) {
-    VIEWS.forEach(v => $(v).classList.toggle('hidden', v !== 'view-' + name));
-  }
-
-  document.querySelectorAll('[data-back]').forEach(el => {
-    el.addEventListener('click', () => {
-      const target = el.getAttribute('data-back');
-      if (target === 'list') { showView('list'); loadProspects(); }
-      if (target === 'detail') { showView('detail'); }
-    });
-  });
-
-  // ---------- API helper ----------
-  async function api(functionName, body, timeoutMs = 45000) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const res = await fetch(`${API}/${functionName}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_token: session, ...body }),
-        signal: controller.signal
-      });
-      clearTimeout(timer);
-      const data = await res.json();
-      if (res.status === 401) {
-        localStorage.removeItem('prepdo_session');
-        window.location.href = 'index.html';
-        return null;
-      }
-      return data;
-    } catch (err) {
-      clearTimeout(timer);
-      if (err.name === 'AbortError') {
-        return { ok: false, message: 'This took too long and timed out. The server may still be working — try again, or type facts in manually below.' };
-      }
-      return { ok: false, message: 'Network error — please try again: ' + err.message };
-    }
-  }
-
-  // ---------- Minimal markdown to HTML ----------
-  function mdToHtml(md) {
-    if (!md || !md.trim()) return '<p style="color:#9B9B94;">Nothing here.</p>';
-    let html = md
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/^#### (.*)$/gim, '<h4>$1</h4>')
-      .replace(/^### (.*)$/gim, '<h4>$1</h4>')
-      .replace(/^## (.*)$/gim, '<h3>$1</h3>')
-      .replace(/^# (.*)$/gim, '<h2>$1</h2>')
-      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
-      .replace(/\*(.*?)\*/g, '<i>$1</i>')
-      .replace(/^- (.*)$/gim, '<li>$1</li>');
-    html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, (m) => '<ul>' + m.replace(/\n/g, '') + '</ul>');
-    html = html.split(/\n\n+/).map(function (p) {
-      const trimmed = p.trim();
-      if (!trimmed) return '';
-      if (trimmed.indexOf('<h') === 0 || trimmed.indexOf('<ul') === 0) return trimmed;
-      return '<p>' + trimmed.replace(/\n/g, '<br>') + '</p>';
-    }).join('');
-    return html;
-  }
-
-  // ---------- Save as Word (client-side, no dependencies) ----------
-  function saveAsWord(filename, htmlContent) {
-    const pre = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>" + filename + "</title></head><body>";
-    const post = '</body></html>';
-    const blob = new Blob(['\ufeff', pre + htmlContent + post], { type: 'application/msword' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.click();
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }
-
-  document.querySelectorAll('[data-save]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const key = btn.getAttribute('data-save');
-      const map = { detailed: 'ai_output_detailed', summary: 'ai_output_summary', keythings: 'ai_output_extra' };
-      const field = map[key];
-      const report = state.lastReport;
-      if (!report) return;
-      const companyName = state.currentProspect ? state.currentProspect.company_name : 'Report';
-      saveAsWord(companyName + '_' + key, mdToHtml(report[field]));
-    });
-  });
-
-  // ---------- Tabs ----------
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-      btn.classList.add('active');
-      $('panel-' + btn.getAttribute('data-tab')).classList.add('active');
-    });
-  });
-
-  // ---------- Prospects List ----------
-  async function loadProspects() {
-    $('prospectsContainer').innerHTML = '<div class="spinner-msg">Loading...</div>';
-    const data = await api('prospects', { action: 'list' });
-    if (!data) return;
-    if (!data.ok) {
-      $('prospectsContainer').innerHTML = '<div class="status-msg error">' + escapeHtml(data.message) + '</div>';
-      return;
-    }
-    state.prospects = data.prospects;
-    if (data.prospects.length === 0) {
-      $('prospectsContainer').innerHTML = '<div class="empty-state">No prospects yet. Click "+ New Prospect" to add your first one.</div>';
-      return;
-    }
-    $('prospectsContainer').innerHTML = data.prospects.map(function (p) {
-      return '<div class="card prospect-card" data-id="' + p.id + '">' +
-        '<div><div class="name">' + escapeHtml(p.prospect_name || '(no contact name)') + '</div>' +
-        '<div class="company">' + escapeHtml(p.company_name) + '</div></div>' +
-        '<div class="subtle">' + new Date(p.created_at).toLocaleDateString() + '</div></div>';
-    }).join('');
-    document.querySelectorAll('.prospect-card').forEach(card => {
-      card.addEventListener('click', () => openProspectDetail(card.getAttribute('data-id')));
-    });
-  }
-
-  function escapeHtml(s) {
-    return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  $('newProspectBtn').addEventListener('click', () => {
-    ['f_company_name','f_company_website','f_prospect_name','f_linkedin_url','f_position','f_meeting_objective','f_notes'].forEach(id => $(id).value = '');
-    $('newProspectStatus').textContent = '';
-    showView('new');
-  });
-
-  $('saveProspectBtn').addEventListener('click', async () => {
-    const body = {
-      action: 'create',
-      company_name: $('f_company_name').value.trim(),
-      company_website: $('f_company_website').value.trim(),
-      prospect_name: $('f_prospect_name').value.trim(),
-      linkedin_url: $('f_linkedin_url').value.trim(),
-      position: $('f_position').value.trim(),
-      meeting_objective: $('f_meeting_objective').value.trim(),
-      notes: $('f_notes').value.trim()
-    };
-    if (!body.company_name) {
-      $('newProspectStatus').textContent = 'Company name is required.';
-      $('newProspectStatus').className = 'status-msg error';
-      return;
-    }
-    $('saveProspectBtn').disabled = true;
-    const data = await api('prospects', body);
-    $('saveProspectBtn').disabled = false;
-    if (!data) return;
-    if (!data.ok) {
-      $('newProspectStatus').textContent = data.message;
-      $('newProspectStatus').className = 'status-msg error';
-      return;
-    }
-    openProspectDetail(data.prospect.id);
-  });
-
-  // ---------- Prospect Detail ----------
-  async function openProspectDetail(id) {
-    showView('detail');
-    $('detailCompanyName').textContent = 'Loading...';
-    $('reportHistoryContainer').innerHTML = '';
-    const data = await api('prospects', { action: 'get', prospect_id: id });
-    if (!data || !data.ok) {
-      $('detailCompanyName').textContent = 'Error loading prospect.';
-      return;
-    }
-    state.currentProspect = data.prospect;
-    state.currentReports = data.reports;
-    $('detailCompanyName').textContent = data.prospect.company_name;
-    const sub = [data.prospect.prospect_name, data.prospect.position].filter(Boolean).join(' \u00b7 ');
-    $('detailSubline').textContent = sub || '';
-
-    if (data.reports.length === 0) {
-      $('reportHistoryContainer').innerHTML = '<div class="subtle">No reports yet — generate a Presales Prep to get started.</div>';
-    } else {
-      $('reportHistoryContainer').innerHTML = data.reports.map(function (r) {
-        return '<div class="report-history-item" data-report-id="' + r.id + '">' +
-          '<span>' + (r.report_type === 'presales_prep' ? 'Presales Prep' : 'Meeting Analysis') + '</span>' +
-          '<span class="subtle">' + new Date(r.created_at).toLocaleString() + '</span></div>';
-      }).join('');
-      document.querySelectorAll('.report-history-item').forEach(el => {
-        el.addEventListener('click', () => {
-          const report = state.currentReports.find(r => r.id === el.getAttribute('data-report-id'));
-          if (report) displayReport(report);
-        });
-      });
-    }
-  }
-
-  // ---------- Presales Prep flow ----------
-  $('generatePrepBtn').addEventListener('click', async () => {
-    showView('research');
-    $('researchLoading').classList.remove('hidden');
-    $('researchResult').classList.add('hidden');
-    $('researchStatus').textContent = '';
-
-    const p = state.currentProspect;
-    const data = await api('presales-research', {
-      company_name: p.company_name,
-      company_website: p.company_website
-    });
-
-    $('researchLoading').classList.add('hidden');
-    $('researchResult').classList.remove('hidden');
-
-    if (!data) return;
-    if (!data.ok) {
-      $('confirmedFactsBox').value = '';
-      $('researchStatus').textContent = data.message || 'Research failed — you can still type facts manually below and continue.';
-      $('researchStatus').className = 'status-msg error';
-      return;
-    }
-    $('confirmedFactsBox').value = data.confirmed_facts;
-  });
-
-  $('generateFullReportBtn').addEventListener('click', async () => {
-    const facts = $('confirmedFactsBox').value.trim();
-    if (!facts) {
-      $('researchStatus').textContent = 'Confirmed Facts cannot be empty — add at least a line or two.';
-      $('researchStatus').className = 'status-msg error';
-      return;
-    }
-    showView('report');
-    $('reportLoading').classList.remove('hidden');
-    $('reportResult').classList.add('hidden');
-    $('reportLoading').innerHTML = 'Generating your report — this can take a moment...';
-
-    const p = state.currentProspect;
-    const data = await api('presales-generate', {
-      prospect_id: p.id,
-      prospect: p,
-      confirmed_facts: facts
-    });
-
-    if (!data) return;
-    if (!data.ok) {
-      $('reportLoading').innerHTML = '<div class="status-msg error">' + escapeHtml(data.message) + '</div>' +
-        (data.raw_output ? '<div class="card" style="text-align:left; margin-top:16px; white-space:pre-wrap;">' + escapeHtml(data.raw_output) + '</div>' : '');
-      return;
-    }
-
-    displayReport(data.report);
-    state.currentReports.unshift(data.report);
-  });
-
-  function displayReport(report) {
-    state.lastReport = report;
-    showView('report');
-    $('reportLoading').classList.add('hidden');
-    $('reportResult').classList.remove('hidden');
-    $('content-detailed').innerHTML = mdToHtml(report.ai_output_detailed);
-    $('content-summary').innerHTML = mdToHtml(report.ai_output_summary);
-    $('content-keythings').innerHTML = mdToHtml(report.ai_output_extra);
-    $('content-ponder').innerHTML = mdToHtml(report.ai_output_ponder);
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    document.querySelector('.tab-btn[data-tab="detailed"]').classList.add('active');
-    $('panel-detailed').classList.add('active');
-  }
-
-  // ---------- Logout ----------
-  $('logoutBtn').addEventListener('click', () => {
-    localStorage.removeItem('prepdo_session');
-    window.location.href = 'index.html';
-  });
-
-  // ---------- Init ----------
-  (async function init() {
-    const data = await api('check-session', { session_token: session });
-    if (!data || !data.ok) {
-      localStorage.removeItem('prepdo_session');
-      window.location.href = 'index.html';
-      return;
-    }
-    $('userDisplay').textContent = data.name + (data.role === 'admin' ? ' (admin)' : '');
-    showView('list');
-    loadProspects();
-  })();
-</script>
-
-</body>
-</html>
+    <span class="back-link" data-back="detail">&larr; Back to
