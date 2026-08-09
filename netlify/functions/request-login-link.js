@@ -1,3 +1,8 @@
+// PREPDO — request-login-link.js
+// BUILD 3 | 2026-08-07 (carried over unchanged from Build 2)
+// Build 2 added: CORS headers, OPTIONS support, wrapped in try/catch
+// so Supabase-side errors return a clean message instead of a 502.
+
 // /netlify/functions/request-login-link.js
 //
 // Self-serve re-entry for someone who's already activated but lost their
