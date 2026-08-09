@@ -1,3 +1,8 @@
+// PREPDO — activate.js
+// BUILD 3 | 2026-08-07 (carried over unchanged from Build 2)
+// Build 2 added: proper try/catch error handling (was crashing with a
+// silent 502 before), CORS headers, OPTIONS support.
+
 // /netlify/functions/activate.js
 //
 // Called when someone clicks their activation link. Validates the token
