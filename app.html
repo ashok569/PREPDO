@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <!--
   PREPDO — app.html
-  BUILD 3 | 2026-08-07
-  New file this build: Prospects list/detail/new-prospect views, and the
-  full two-step Presales Prep flow (research → editable facts → 4-tab
-  report with Save-as-Word). First real feature UI built on the app.
+  BUILD 4 | 2026-08-08
+  Fixed: the api() helper now has a 45s client-side timeout (was hanging
+  forever on "Searching the web..." with no error, when the underlying
+  Netlify function timed out silently). Now always resolves to a clear
+  message either way, and the Confirmed Facts box stays editable so you
+  can proceed manually if research times out.
 -->
 <html lang="en">
 <head>
@@ -274,19 +276,31 @@
   });
 
   // ---------- API helper ----------
-  async function api(functionName, body) {
-    const res = await fetch(`${API}/${functionName}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_token: session, ...body })
-    });
-    const data = await res.json();
-    if (res.status === 401) {
-      localStorage.removeItem('prepdo_session');
-      window.location.href = 'index.html';
-      return null;
+  async function api(functionName, body, timeoutMs = 45000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${API}/${functionName}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_token: session, ...body }),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (res.status === 401) {
+        localStorage.removeItem('prepdo_session');
+        window.location.href = 'index.html';
+        return null;
+      }
+      return data;
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        return { ok: false, message: 'This took too long and timed out. The server may still be working — try again, or type facts in manually below.' };
+      }
+      return { ok: false, message: 'Network error — please try again: ' + err.message };
     }
-    return data;
   }
 
   // ---------- Minimal markdown to HTML ----------
@@ -319,7 +333,7 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = filename.replace(/[^a-z0-9]/gi, '_') + '.doc';
+    a.click();
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
