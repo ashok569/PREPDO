@@ -1,8 +1,12 @@
 // PREPDO — presales-generate.js
-// BUILD 3 | 2026-08-07
-// New file this build: Presales Prep Step 2 — generates the 4-part
-// Detailed/Summary/Key Things/Points to Ponder report using the full
-// lmi-context.md, saves the result to the reports table.
+// BUILD 7 | 2026-08-09
+// Fixed: fs.readFileSync(lmi-context.md) was crashing the whole module
+// at load time if that file was missing/misnamed on the deployed site —
+// this produces an instant, opaque 502 (visible in Netlify logs as a
+// very short duration, ~1-2s, NOT a ~30s timeout — a different failure
+// mode than the earlier research timeout, easy to tell apart by
+// duration alone). Now wrapped in try/catch so a missing file returns
+// a clear, diagnosable error message instead of crashing silently.
 
 // /netlify/functions/presales-generate.js
 //
@@ -15,7 +19,17 @@ const fs = require('fs');
 const path = require('path');
 const { getMemberFromSession, callClaude, extractText, supaPost, respond, handleOptions } = require('./_lib.js');
 
-const LMI_CONTEXT = fs.readFileSync(path.join(__dirname, 'lmi-context.md'), 'utf8');
+let LMI_CONTEXT;
+let LMI_CONTEXT_LOAD_ERROR = null;
+try {
+  LMI_CONTEXT = fs.readFileSync(path.join(__dirname, 'lmi-context.md'), 'utf8');
+} catch (err) {
+  // Module-level errors can't be caught by the handler's own try/catch
+  // (they happen before the handler even exists), so we catch it here
+  // and let the handler return a clean message instead of the whole
+  // function silently failing to load.
+  LMI_CONTEXT_LOAD_ERROR = err.message;
+}
 
 const SECTION_NAMES = ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS', 'STRATEGY', 'SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER'];
 
@@ -48,6 +62,9 @@ exports.handler = async function (event) {
   const { session_token, prospect_id, prospect, confirmed_facts } = payload;
 
   try {
+    if (LMI_CONTEXT_LOAD_ERROR) {
+      return respond(500, { ok: false, message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR + ' — check it exists in netlify/functions/ on the deployed site, with the exact filename "lmi-context.md".' });
+    }
     const member = await getMemberFromSession(session_token);
     if (!member) {
       return respond(401, { ok: false, message: 'Not logged in. Please log in again.' });
