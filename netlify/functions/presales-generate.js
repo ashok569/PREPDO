@@ -1,11 +1,16 @@
 // PREPDO — presales-generate.js
-// BUILD 9 | 2026-08-09
-// Fixed the real remaining issue: this function now loads lmi-context.md
-// correctly (see BUILD 8 / netlify.toml), but generating all 7 report
-// sections in ONE call was too slow — confirmed by a real 504 at
-// ~30.4s in testing. Same fix as presales-research.js: split into
-// parallel calls instead of one large sequential one, so total time is
-// bounded by the slowest single call, not the sum.
+// BUILD 10 | 2026-08-09
+// Fixed a real formatting bug found in production: Strategy sub-headers
+// like "**EDM and success-bar calibration**" were running directly into
+// the paragraph that followed with no line break, in the actual saved
+// report (visible in the Word export). Root cause: the AI was using
+// inline **bold** as a pseudo-heading, which only gets a paragraph
+// break if a full blank line follows it — inconsistent. Fixed at the
+// source: Strategy now explicitly instructed to use #### real
+// sub-headings instead. Also added an explicit instruction to notice
+// and reflect referral/introduction context from the prospect's Notes
+// field (a real gap found in manual testing — a referral source
+// mentioned in Notes wasn't showing up in generated Strategy).
 //
 // Split into 3 parallel calls:
 //   1. "facts" — Confirmed Facts / Likely Dynamics / Assumptions.
@@ -80,7 +85,7 @@ Website: ${prospect.company_website || '(not provided)'}
 Contact: ${prospect.prospect_name || '(not provided)'}, role: ${prospect.position || '(unknown)'}
 LinkedIn: ${prospect.linkedin_url || '(not provided)'}
 Meeting objective: ${prospect.meeting_objective || '(not specified)'}
-Notes: ${prospect.notes || '(none)'}
+Notes: ${prospect.notes || '(none)'} (if this mentions a referral source, introduction, or how the meeting was arranged, treat that as important context and reflect it in Strategy/Assumptions — e.g. a warm introduction changes how Rapport/Credibility can be opened)
 
 CONFIRMED FACTS (from research, reviewed and possibly edited by the salesperson — treat as ground truth):
 ${confirmed_facts}`;
@@ -120,7 +125,17 @@ async function generateStrategy(prospect, confirmed_facts) {
 
 ---
 
-Using the LMI sales context above, produce the Recommended Sales Strategy section of a presales prep report — the PBM hypotheses, opening/probing questions, and recommended approach for this specific meeting. Apply the LMI sales context heavily. Write genuine narrative analysis, not just a list of category labels. Respond with EXACTLY this header, nothing before it or after the content:
+Using the LMI sales context above, produce the Recommended Sales Strategy section of a presales prep report — the PBM hypotheses, opening/probing questions, and recommended approach for this specific meeting. Apply the LMI sales context heavily. Write genuine narrative analysis, not just a list of category labels.
+
+Structure this with sub-headings using #### (four hashes), each on its own line, followed by a blank line, then the paragraph — e.g.:
+
+#### EDM and Success-Bar Calibration
+
+Paragraph text here...
+
+Do NOT use **bold** as a substitute for a sub-heading — it must be #### followed by a blank line, so it renders as a real heading rather than running into the paragraph that follows it.
+
+Respond with EXACTLY this top-level header, nothing before it or after the content:
 
 ### STRATEGY`;
 
