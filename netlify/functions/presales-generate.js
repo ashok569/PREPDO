@@ -1,16 +1,33 @@
 // PREPDO — presales-generate.js
-// BUILD 8 | 2026-08-09
-// Fixed the real cause of the ENOENT: Netlify's function bundler only
-// auto-packages files that are require()'d as code — a plain data file
-// read via fs.readFileSync (like lmi-context.md) gets silently left out
-// of the deployed function unless explicitly listed via
-// `included_files` in netlify.toml (added this build). Since it's not
-// 100% certain whether Netlify preserves the source folder structure or
-// flattens it when placing an included_files entry into the deployed
-// bundle, this version tries several likely locations rather than
-// hardcoding one guess — and if none work, reports exactly which paths
-// were tried, so a next failure (if any) is immediately diagnosable
-// instead of another round of guessing.
+// BUILD 9 | 2026-08-09
+// Fixed the real remaining issue: this function now loads lmi-context.md
+// correctly (see BUILD 8 / netlify.toml), but generating all 7 report
+// sections in ONE call was too slow — confirmed by a real 504 at
+// ~30.4s in testing. Same fix as presales-research.js: split into
+// parallel calls instead of one large sequential one, so total time is
+// bounded by the slowest single call, not the sum.
+//
+// Split into 3 parallel calls:
+//   1. "facts" — Confirmed Facts / Likely Dynamics / Assumptions.
+//      Mostly organizing given facts + generic business inference, not
+//      deep LMI-methodology reasoning — Haiku, no need for the full
+//      lmi-context.md.
+//   2. "strategy" — the Recommended Sales Strategy section alone. This
+//      is the one place lmi-context.md needs to be applied heavily, so
+//      it gets its own dedicated call, full context, Sonnet, generous
+//      token budget.
+//   3. "digest" — Summary / Key Things / Points to Ponder. Condensed
+//      derivative content, generated independently (in parallel, not
+//      sequentially from Strategy's actual output) — a deliberate
+//      trade-off: slightly less perfectly cross-referenced with the
+//      Strategy call's exact wording, in exchange for reliably beating
+//      the 30s ceiling. Still grounded in the same facts + full LMI
+//      context, so it stays broadly consistent even though it's an
+//      independent generation, not a literal summary-of-the-output.
+//
+// If one of the 3 calls fails, the others still return — a partial
+// report (with a clear note on what's missing) beats losing the whole
+// step over one bad sub-call, same principle as the research fix.
 
 // /netlify/functions/presales-generate.js
 //
@@ -40,19 +57,13 @@ try {
   }
   LMI_CONTEXT = fs.readFileSync(foundPath, 'utf8');
 } catch (err) {
-  // Module-level errors can't be caught by the handler's own try/catch
-  // (they happen before the handler even exists), so we catch it here
-  // and let the handler return a clean message instead of the whole
-  // function silently failing to load.
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
-const SECTION_NAMES = ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS', 'STRATEGY', 'SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER'];
-
-function parseSections(text) {
+function parseMarkers(text, markers) {
   const result = {};
   const pattern = new RegExp(
-    `### (${SECTION_NAMES.join('|')})\\s*\\n([\\s\\S]*?)(?=\\n### (?:${SECTION_NAMES.join('|')})\\s*\\n|$)`,
+    `### (${markers.join('|')})\\s*\\n([\\s\\S]*?)(?=\\n### (?:${markers.join('|')})\\s*\\n|$)`,
     'g'
   );
   let m;
@@ -60,6 +71,96 @@ function parseSections(text) {
     result[m[1]] = m[2].trim();
   }
   return result;
+}
+
+function buildProspectBlock(prospect, confirmed_facts) {
+  return `PROSPECT DETAILS
+Company: ${prospect.company_name}
+Website: ${prospect.company_website || '(not provided)'}
+Contact: ${prospect.prospect_name || '(not provided)'}, role: ${prospect.position || '(unknown)'}
+LinkedIn: ${prospect.linkedin_url || '(not provided)'}
+Meeting objective: ${prospect.meeting_objective || '(not specified)'}
+Notes: ${prospect.notes || '(none)'}
+
+CONFIRMED FACTS (from research, reviewed and possibly edited by the salesperson — treat as ground truth):
+${confirmed_facts}`;
+}
+
+async function generateFacts(prospect, confirmed_facts) {
+  try {
+    const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
+
+---
+
+Produce three sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
+
+### CONFIRMED_FACTS
+(restate the confirmed facts, lightly organized — stay close to what was verified, don't add new claims)
+
+### LIKELY_DYNAMICS
+(reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality)
+
+### ASSUMPTIONS
+(open questions the confirmed facts can't answer — things worth validating early in the meeting)`;
+
+    const res = await callClaude({
+      model: 'claude-haiku-4-5-20251001',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1200
+    });
+    return { ok: true, sections: parseMarkers(extractText(res), ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS']) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function generateStrategy(prospect, confirmed_facts) {
+  try {
+    const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
+
+---
+
+Using the LMI sales context above, produce the Recommended Sales Strategy section of a presales prep report — the PBM hypotheses, opening/probing questions, and recommended approach for this specific meeting. Apply the LMI sales context heavily. Write genuine narrative analysis, not just a list of category labels. Respond with EXACTLY this header, nothing before it or after the content:
+
+### STRATEGY`;
+
+    const res = await callClaude({
+      system: LMI_CONTEXT,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 2200
+    });
+    return { ok: true, sections: parseMarkers(extractText(res), ['STRATEGY']) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function generateDigest(prospect, confirmed_facts) {
+  try {
+    const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
+
+---
+
+Using the LMI sales context above, produce three condensed sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
+
+### SUMMARY
+(a condensed version of the recommended approach for this meeting — a few short paragraphs, readable in about two minutes right before walking in)
+
+### KEY_THINGS
+(a tight bullet list — 4 to 6 things not to forget in the room)
+
+### POINTS_TO_PONDER
+(a neutral reflection space for genuine ambiguity, a tentative hunch, or anything that doesn't cleanly fit elsewhere. This may be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
+
+    const res = await callClaude({
+      system: LMI_CONTEXT,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1500
+    });
+    return { ok: true, sections: parseMarkers(extractText(res), ['SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER']) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 }
 
 exports.handler = async function (event) {
@@ -89,71 +190,42 @@ exports.handler = async function (event) {
       return respond(400, { ok: false, message: 'prospect_id, prospect, and confirmed_facts are all required.' });
     }
 
-    const userPrompt = `PROSPECT DETAILS
-Company: ${prospect.company_name}
-Website: ${prospect.company_website || '(not provided)'}
-Contact: ${prospect.prospect_name || '(not provided)'}, role: ${prospect.position || '(unknown)'}
-LinkedIn: ${prospect.linkedin_url || '(not provided)'}
-Meeting objective: ${prospect.meeting_objective || '(not specified)'}
-Notes: ${prospect.notes || '(none)'}
+    // Fire all three in parallel — total time bounded by the slowest
+    // one, not the sum. allSettled so one bad section doesn't kill the
+    // whole report.
+    const [factsResult, strategyResult, digestResult] = await Promise.allSettled([
+      generateFacts(prospect, confirmed_facts),
+      generateStrategy(prospect, confirmed_facts),
+      generateDigest(prospect, confirmed_facts)
+    ]);
 
-CONFIRMED FACTS (from research, reviewed and possibly edited by the salesperson — treat as ground truth):
-${confirmed_facts}
+    const results = [factsResult, strategyResult, digestResult].map((r) =>
+      r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
+    );
 
----
-
-Using the LMI sales context above, produce a presales preparation report for this specific meeting. Respond with EXACTLY these markdown section headers, each starting on its own new line, in this exact order, with nothing before the first header and nothing after the last section's content:
-
-### CONFIRMED_FACTS
-(restate the confirmed facts, lightly organized — this section should stay close to what was verified, not add new claims)
-
-### LIKELY_DYNAMICS
-(reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality)
-
-### ASSUMPTIONS
-(open questions the confirmed facts can't answer — things worth validating early in the meeting)
-
-### STRATEGY
-(the actual PBM hypotheses, opening/probing questions, and recommended approach for this meeting — apply the LMI sales context heavily here. Write genuine narrative analysis, not just a list of category labels.)
-
-### SUMMARY
-(a condensed version of the above — a few short paragraphs, readable in about two minutes right before walking into the meeting)
-
-### KEY_THINGS
-(a tight bullet list — 4 to 6 things not to forget in the room)
-
-### POINTS_TO_PONDER
-(a neutral reflection space for genuine ambiguity, a tentative hunch, or anything that doesn't cleanly fit the sections above. This may be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
-
-    const claudeRes = await callClaude({
-      system: LMI_CONTEXT,
-      messages: [{ role: 'user', content: userPrompt }],
-      max_tokens: 6000
-    });
-
-    const fullText = extractText(claudeRes);
-    const sections = parseSections(fullText);
-
-    if (Object.keys(sections).length === 0) {
-      // The model didn't follow the section-marker format — return the raw
-      // text rather than silently saving an empty report.
-      return respond(200, {
-        ok: false,
-        message: 'The report generated but not in the expected format. Raw output below — you can copy it manually, or try again.',
-        raw_output: fullText
-      });
+    if (results.every((r) => !r.ok)) {
+      return respond(200, { ok: false, message: 'Report generation failed on every section. Try again.' });
     }
 
+    const allSections = Object.assign({}, ...results.filter((r) => r.ok).map((r) => r.sections));
+    const failedParts = [];
+    if (!results[0].ok) failedParts.push('Confirmed Facts / Dynamics / Assumptions');
+    if (!results[1].ok) failedParts.push('Recommended Sales Strategy');
+    if (!results[2].ok) failedParts.push('Summary / Key Things / Points to Ponder');
+
     const detailed = [
-      '## Confirmed Facts', sections.CONFIRMED_FACTS || '(not generated)',
-      '', '## Likely Organizational Dynamics', sections.LIKELY_DYNAMICS || '(not generated)',
-      '', '## Assumptions to Validate', sections.ASSUMPTIONS || '(not generated)',
-      '', '## Recommended Sales Strategy', sections.STRATEGY || '(not generated)'
+      '## Confirmed Facts', allSections.CONFIRMED_FACTS || '(not generated)',
+      '', '## Likely Organizational Dynamics', allSections.LIKELY_DYNAMICS || '(not generated)',
+      '', '## Assumptions to Validate', allSections.ASSUMPTIONS || '(not generated)',
+      '', '## Recommended Sales Strategy', allSections.STRATEGY || '(not generated)'
     ].join('\n');
 
-    let ponder = sections.POINTS_TO_PONDER || '';
+    let ponder = allSections.POINTS_TO_PONDER || '';
     if (ponder && !/nothing further to flag/i.test(ponder)) {
       ponder += '\n\n*The above might matter, might not matter — you judge.*';
+    }
+    if (failedParts.length > 0) {
+      ponder += (ponder ? '\n\n' : '') + `*(Note: generation of ${failedParts.join(', ')} didn't complete — you may want to retry.)*`;
     }
 
     const [report] = await supaPost('reports', {
@@ -162,8 +234,8 @@ Using the LMI sales context above, produce a presales preparation report for thi
       report_type: 'presales_prep',
       confirmed_facts,
       ai_output_detailed: detailed,
-      ai_output_summary: sections.SUMMARY || '',
-      ai_output_extra: sections.KEY_THINGS || '',
+      ai_output_summary: allSections.SUMMARY || '',
+      ai_output_extra: allSections.KEY_THINGS || '',
       ai_output_ponder: ponder
     });
 
