@@ -1,12 +1,16 @@
 // PREPDO — presales-generate.js
-// BUILD 7 | 2026-08-09
-// Fixed: fs.readFileSync(lmi-context.md) was crashing the whole module
-// at load time if that file was missing/misnamed on the deployed site —
-// this produces an instant, opaque 502 (visible in Netlify logs as a
-// very short duration, ~1-2s, NOT a ~30s timeout — a different failure
-// mode than the earlier research timeout, easy to tell apart by
-// duration alone). Now wrapped in try/catch so a missing file returns
-// a clear, diagnosable error message instead of crashing silently.
+// BUILD 8 | 2026-08-09
+// Fixed the real cause of the ENOENT: Netlify's function bundler only
+// auto-packages files that are require()'d as code — a plain data file
+// read via fs.readFileSync (like lmi-context.md) gets silently left out
+// of the deployed function unless explicitly listed via
+// `included_files` in netlify.toml (added this build). Since it's not
+// 100% certain whether Netlify preserves the source folder structure or
+// flattens it when placing an included_files entry into the deployed
+// bundle, this version tries several likely locations rather than
+// hardcoding one guess — and if none work, reports exactly which paths
+// were tried, so a next failure (if any) is immediately diagnosable
+// instead of another round of guessing.
 
 // /netlify/functions/presales-generate.js
 //
@@ -19,10 +23,22 @@ const fs = require('fs');
 const path = require('path');
 const { getMemberFromSession, callClaude, extractText, supaPost, respond, handleOptions } = require('./_lib.js');
 
+const CANDIDATE_PATHS = [
+  path.join(__dirname, 'lmi-context.md'),
+  path.join(__dirname, 'netlify', 'functions', 'lmi-context.md'),
+  path.join(process.cwd(), 'netlify', 'functions', 'lmi-context.md'),
+  '/var/task/lmi-context.md',
+  '/var/task/netlify/functions/lmi-context.md'
+];
+
 let LMI_CONTEXT;
 let LMI_CONTEXT_LOAD_ERROR = null;
 try {
-  LMI_CONTEXT = fs.readFileSync(path.join(__dirname, 'lmi-context.md'), 'utf8');
+  const foundPath = CANDIDATE_PATHS.find((p) => fs.existsSync(p));
+  if (!foundPath) {
+    throw new Error(`Not found in any of: ${CANDIDATE_PATHS.join(', ')}`);
+  }
+  LMI_CONTEXT = fs.readFileSync(foundPath, 'utf8');
 } catch (err) {
   // Module-level errors can't be caught by the handler's own try/catch
   // (they happen before the handler even exists), so we catch it here
