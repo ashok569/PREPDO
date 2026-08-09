@@ -1,16 +1,21 @@
+// PREPDO — _lib.js
+// BUILD 3 | 2026-08-07
+// Changed this build: added getMemberFromSession() auth helper; added
+// callClaude()/extractText() for the Anthropic API; error messages now
+// name the specific missing env var instead of failing silently.
+
 // /netlify/functions/_lib.js
 //
-// Shared helpers for the invite/activation/session system.
+// Shared helpers — auth/session validation, Supabase REST calls, and
+// the Anthropic (Claude) API caller used by the Presales Prep functions.
 // Not deployed as its own endpoint — required by the other functions.
 
 const crypto = require('crypto');
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 
-// CORS headers applied to every response, so this can be called from
-// tools/pages hosted somewhere other than the main site (e.g. a local
-// bootstrap/debug page opened as a file), not just same-origin requests.
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
@@ -26,19 +31,16 @@ function supaHeaders(extra = {}) {
   };
 }
 
-// Fails loudly and clearly if the env vars themselves are missing, rather
-// than letting every call fail with a confusing generic error later.
-function checkEnvVars() {
-  const missing = [];
-  if (!SUPABASE_URL) missing.push('SUPABASE_URL');
-  if (!SUPABASE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+function checkEnvVars(...names) {
+  const vals = { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY: SUPABASE_KEY, ANTHROPIC_API_KEY };
+  const missing = names.filter((n) => !vals[n]);
   if (missing.length) {
     throw new Error(`Missing required environment variable(s): ${missing.join(', ')}. Check Netlify Site settings → Environment variables, and confirm a deploy has run since they were added.`);
   }
 }
 
 async function supaGet(path) {
-  checkEnvVars();
+  checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: supaHeaders() });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -48,7 +50,7 @@ async function supaGet(path) {
 }
 
 async function supaPost(path, body) {
-  checkEnvVars();
+  checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'POST',
     headers: supaHeaders({ Prefer: 'return=representation' }),
@@ -62,7 +64,7 @@ async function supaPost(path, body) {
 }
 
 async function supaPatch(path, body) {
-  checkEnvVars();
+  checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'PATCH',
     headers: supaHeaders({ Prefer: 'return=representation' }),
@@ -75,9 +77,8 @@ async function supaPatch(path, body) {
   return res.json();
 }
 
-// Generates a random URL-safe token. Only its hash is ever stored.
 function generateToken() {
-  return crypto.randomBytes(32).toString('base64url'); // 43 chars, URL-safe
+  return crypto.randomBytes(32).toString('base64url');
 }
 
 function hashToken(token) {
@@ -92,15 +93,10 @@ function respond(statusCode, body) {
   };
 }
 
-// A handler for CORS preflight OPTIONS requests — browsers send these
-// automatically before certain cross-origin POST requests. Each function
-// should return this immediately when it sees an OPTIONS request.
 function handleOptions() {
   return { statusCode: 204, headers: CORS_HEADERS, body: '' };
 }
 
-// Computes subscription_start_date / subscription_expiry_date / status
-// for a first activation, matching the trial=3mo / paid=1yr rule.
 function computeSubscriptionFields(subscriptionType) {
   const now = new Date();
   const expiry = new Date(now);
@@ -117,9 +113,60 @@ function computeSubscriptionFields(subscriptionType) {
   };
 }
 
+// Looks up which team_members row a session token belongs to, checking
+// expiry. Returns null (not an error) if the session isn't valid — every
+// function that needs a logged-in user should check for null and respond
+// with a clear "please log in again" message.
+async function getMemberFromSession(session_token) {
+  if (!session_token) return null;
+  const token_hash = hashToken(session_token);
+  const matches = await supaGet(`team_members?session_token_hash=eq.${token_hash}&select=*`);
+  if (matches.length === 0) return null;
+  const member = matches[0];
+  if (new Date(member.session_expires_at) < new Date()) return null;
+  return member;
+}
+
+// Calls the Anthropic API. `tools` is optional (used for web search in
+// the Presales Prep research step). Returns the raw API response.
+async function callClaude({ system, messages, tools, max_tokens = 4096 }) {
+  checkEnvVars('ANTHROPIC_API_KEY');
+  const body = { model: 'claude-sonnet-4-6', max_tokens, messages };
+  if (system) body.system = system;
+  if (tools) body.tools = tools;
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Anthropic API failed: ${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
+// Pulls just the plain-text content out of a Claude API response,
+// ignoring tool_use/tool_result/server_tool_use blocks (relevant when
+// web search was used) — this is the actual generated text.
+function extractText(claudeResponse) {
+  return (claudeResponse.content || [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+}
+
 module.exports = {
   supaGet, supaPost, supaPatch,
   generateToken, hashToken,
   respond, handleOptions,
-  computeSubscriptionFields
+  computeSubscriptionFields,
+  getMemberFromSession,
+  callClaude, extractText
 };
