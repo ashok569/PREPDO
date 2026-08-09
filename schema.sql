@@ -1,5 +1,9 @@
--- PREPDO AI Sales Coach — Supabase schema (v0.6)
--- Run this in the Supabase SQL editor. Safe to run once on a fresh project.
+-- PREPDO — schema.sql
+-- BUILD 3 | 2026-08-07 (schema itself carried over unchanged from Build 2 —
+-- the invite-token auth rebuild; see migration_v1.sql for what's new
+-- this build, run as a separate additive script, not a replacement)
+-- Run this in the Supabase SQL editor. Only needed once, on a fresh project
+-- — if you've already run a version of this, use migration_v1.sql instead.
 
 create extension if not exists "uuid-ossp";
 
