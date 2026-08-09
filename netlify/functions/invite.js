@@ -1,3 +1,9 @@
+// PREPDO — invite.js
+// BUILD 3 | 2026-08-07 (carried over unchanged from Build 2)
+// Build 2 added: CORS headers (fixed "Failed to fetch" from the
+// standalone bootstrap-admin tool), OPTIONS support, wrapped the
+// admin-check call in try/catch.
+
 // /netlify/functions/invite.js
 //
 // Admin action: invite one or many people by name+email. For each one,
