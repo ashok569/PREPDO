@@ -1,3 +1,8 @@
+// PREPDO — check-session.js
+// BUILD 3 | 2026-08-07 (carried over unchanged from Build 2)
+// Build 2 fix: this file's missing try/catch was the direct cause of the
+// 500/502 errors during initial login testing — now fixed and stable.
+
 // /netlify/functions/check-session.js
 //
 // Called on every app load to validate a stored session token (from
