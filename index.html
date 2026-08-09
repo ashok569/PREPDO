@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!--
+  PREPDO — index.html
+  BUILD 3 | 2026-08-07
+  Changed this build: successful login/activation now redirects to
+  app.html instead of showing a dead-end "you're signed in" message
+  with nothing else to do.
+-->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -109,8 +116,8 @@
   }
 
   function showWelcome(name) {
-    $('welcomeName').textContent = 'Welcome, ' + (name || 'there') + '.';
-    showOnly('welcomeScreen');
+    // Successful login — hand off to the actual app.
+    window.location.href = 'app.html';
   }
 
   async function checkSession(token) {
