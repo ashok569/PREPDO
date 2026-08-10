@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<!--
+  PREPDO — app.html
+  BUILD 14 | 2026-08-10
+  Two additions:
+  1. New 5th report tab: SPIN Questions (Situational/Problem/
+     Implication/Need-Payoff/Closing) — a literal question bank,
+     generated as a 4th parallel call alongside Facts/Strategy/Digest.
+     Has its own individual "Save as Word" button (this section only),
+     and is also included as a 5th section in the main consolidated
+     Save as Word export. Requires migration_v4.sql (ai_output_spin
+     column) and the updated presales-generate-background.js.
+  2. Rotating "processing" graphic — a small green bubble orbiting a
+     circular track — shown throughout report generation, including
+     during the "still working, taking longer than usual" message, so
+     there's a visible sign of life during the wait, not just changing
+     text.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PREPDO — AI Sales Coach</title>
+<style>
+  :root {
+    --ink: #14213D;
+    --ink-soft: #3A4B78;
+    --paper: #F7F7F5;
+    --accent: #C87A3E;
+    --accent-soft: #E9C9AC;
+    --line: #DCDCD6;
+    --green: #2E7D4F;
+    --red: #B23A3A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--ink);
+    min-height: 100vh;
+  }
+  header {
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .wordmark-sm { font-weight: 800; font-size: 18px; }
+  .wordmark-sm span { color: var(--accent); }
+  .user-info { font-size: 13px; color: var(--ink-soft); display: flex; align-items: center; gap: 14px; }
+  .logout-link { color: var(--ink-soft); cursor: pointer; text-decoration: underline; font-size: 13px; }
+
+  main { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 28px 0 10px; }
+  .subtle { color: var(--ink-soft); font-size: 13px; }
+
+  .row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+
+  button {
+    padding: 10px 18px; font-size: 14px; font-weight: 700; letter-spacing: 0.3px;
+    text-transform: uppercase; color: #fff; background: var(--ink);
+    border: none; border-radius: 3px; cursor: pointer;
+  }
+  button:hover { background: var(--ink-soft); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  button.secondary { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  button.secondary:hover { background: var(--paper); }
+  button.small { padding: 6px 12px; font-size: 12px; }
+
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 4px;
+    padding: 20px; margin-bottom: 14px;
+  }
+  .prospect-card { cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+  .prospect-card:hover { border-color: var(--accent); }
+  .prospect-card .name { font-weight: 700; font-size: 15px; }
+  .prospect-card .company { color: var(--ink-soft); font-size: 13px; }
+
+  label {
+    display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.4px;
+    text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 6px;
+  }
+  input[type="text"], textarea, select {
+    width: 100%; padding: 10px 12px; font-size: 14px;
+    border: 1px solid var(--line); border-radius: 3px; background: var(--paper);
+    color: var(--ink); font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 100px; }
+  input:focus, textarea:focus, select:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+
+  .empty-state { text-align: center; padding: 50px 20px; color: var(--ink-soft); }
+
+  .status-msg { margin-top: 12px; font-size: 13px; }
+  .status-msg.error { color: var(--red); }
+  .status-msg.success { color: var(--green); }
+
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: 20px 0 16px; }
+  .tab-btn {
+    padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer;
+    background: none; color: var(--ink-soft); border: none; border-bottom: 2px solid transparent;
+    text-transform: none; letter-spacing: normal;
+  }
+  .tab-btn.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .report-content { line-height: 1.6; font-size: 14px; }
+  .report-content h2, .report-content h3, .report-content h4 { margin-top: 20px; }
+  .report-content ul { padding-left: 20px; }
+
+  .spinner-msg { text-align: center; padding: 60px 20px; color: var(--ink-soft); }
+
+  .spinner-orbit { position: relative; width: 44px; height: 44px; margin: 0 auto 18px; }
+  .spinner-track { position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--line); }
+  .spinner-rotator { position: absolute; inset: 0; animation: spin-rotate 1.1s linear infinite; }
+  .spinner-bubble {
+    position: absolute; top: -3px; left: 50%; width: 9px; height: 9px;
+    margin-left: -4.5px; background: var(--green); border-radius: 50%;
+    box-shadow: 0 0 5px var(--green);
+  }
+  @keyframes spin-rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  .hidden { display: none; }
+
+  .back-link { color: var(--ink-soft); cursor: pointer; font-size: 13px; text-decoration: underline; margin-bottom: 16px; display: inline-block; }
+
+  .report-history-item {
+    padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+    display: flex; justify-content: space-between; cursor: pointer;
+  }
+  .report-history-item:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark-sm">PREP<span>DO</span></div>
+  <div class="user-info">
+    <span id="userDisplay"></span>
+    <span class="logout-link" id="logoutBtn">Log out</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- ===================== VIEW: Prospects List ===================== -->
+  <div id="view-list">
+    <div class="row">
+      <div>
+        <h1>Prospects</h1>
+        <div class="subtle">Every account you're working, in one place. <span class="back-link" id="viewArchivedLink">View Archived</span></div>
+      </div>
+      <button id="newProspectBtn">+ New Prospect</button>
+    </div>
+    <div id="prospectsContainer"><div class="spinner-msg">Loading...</div></div>
+  </div>
+
+  <!-- ===================== VIEW: Archived Prospects ===================== -->
+  <div id="view-archived" class="hidden">
+    <span class="back-link" data-back="list">&larr; Back to Prospects</span>
+    <h1>Archived</h1>
+    <div class="subtle">Prospects moved out of the main list. Bring one back with Make Current, or delete it for good.</div>
+    <div id="archivedContainer" style="margin-top: 20px;"><div class="spinner-msg">Loading...</div></div>
+  </div>
+
+  <!-- ===================== VIEW: New Prospect ===================== -->
+  <div id="view-new" class="hidden">
+    <span class="back-link" data-back="list">&larr; Back to Prospects</span>
+    <h1>New Prospect</h1>
+    <div class="card">
+      <label>Company Name *</label>
+      <input type="text" id="f_company_name">
+
+      <label>Company Website</label>
+      <input type="text" id="f_company_website" placeholder="https://...">
+
+      <label>Prospect Name</label>
+      <input type="text" id="f_prospect_name">
+
+      <label>LinkedIn URL</label>
+      <input type="text" id="f_linkedin_url" placeholder="https://linkedin.com/in/...">
+
+      <label>Position / Role</label>
+      <input type="text" id="f_position">
+
+      <label>Meeting Objective</label>
+      <input type="text" id="f_meeting_objective">
+
+      <label>Notes</label>
+      <textarea id="f_notes"></textarea>
+
+      <div style="margin-top: 20px;">
+        <button id="saveProspectBtn">Save Prospect</button>
+      </div>
+      <div class="status-msg" id="newProspectStatus"></div>
+    </div>
+  </div>
+
+  <!-- ===================== VIEW: Prospect Detail ===================== -->
+  <div id="view-detail" class="hidden">
+    <span class="back-link" data-back="list">&larr; Back to Prospects</span>
+    <h1 id="detailCompanyName"></h1>
+    <div class="subtle" id="detailSubline"></div>
+
+    <div class="card" style="margin-top: 20px;">
+      <div class="row" style="margin-bottom: 0;">
+        <div>
+          <strong id="prepCardTitle">Presales Prep</strong>
+          <div class="subtle" id="prepCardSubtitle">Research the account and generate a prep report before your meeting.</div>
+        </div>
+        <button id="generatePrepBtn">Generate Presales Prep</button>
+      </div>
+      <div id="rerunInputBox" class="hidden" style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px;">
+        <label>Additional Information to Include</label>
+        <div class="subtle" style="margin-bottom: 8px;">E.g. a referral source, an updated contact, or anything new since the last report. This won't re-run web search — it adds to the existing Confirmed Facts, which you can still edit before generating.</div>
+        <textarea id="rerunAdditionalInput" style="min-height: 90px;"></textarea>
+        <div style="margin-top: 12px;">
+          <button id="rerunContinueBtn">Continue</button>
+          <button class="secondary" id="rerunCancelBtn" style="margin-left: 8px;">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <h2>Report History</h2>
+    <div id="reportHistoryContainer"><div class="subtle">No reports yet.</div></div>
+  </div>
+
+  <!-- ===================== VIEW: Presales Prep Step 1 (Research) ===================== -->
+  <div id="view-research" class="hidden">
+    <span class="back-link" data-back="detail">&larr; Back to Prospect</span>
+    <h1>Presales Prep — Step 1: Research</h1>
+    <div id="researchLoading" class="spinner-msg">
+      <div class="spinner-orbit"><div class="spinner-track"></div><div class="spinner-rotator"><div class="spinner-bubble"></div></div></div>
+      Searching the web for company information...
+    </div>
+    <div id="researchResult" class="hidden">
+      <div class="card">
+        <label>Confirmed Facts (review and edit before continuing)</label>
+        <textarea id="confirmedFactsBox" style="min-height: 220px;"></textarea>
+        <div style="margin-top: 16px;">
+          <button id="generateFullReportBtn">Generate Full Report</button>
+        </div>
+        <div class="status-msg" id="researchStatus"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== VIEW: Presales Prep Step 2 (Full Report) ===================== -->
+  <div id="view-report" class="hidden">
+    <span class="back-link" data-back="detail">&larr; Back to Prospect</span>
+    <h1>Presales Prep Report</h1>
+    <div id="reportLoading" class="spinner-msg">
+      <div class="spinner-orbit"><div class="spinner-track"></div><div class="spinner-rotator"><div class="spinner-bubble"></div></div></div>
+      Generating your report — this can take a moment...
+    </div>
+    <div id="reportResult" class="hidden">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="detailed">Detailed</button>
+        <button class="tab-btn" data-tab="summary">Summary</button>
+        <button class="tab-btn" data-tab="keythings">Key Things</button>
+        <button class="tab-btn" data-tab="ponder">Points to Ponder</button>
+        <button class="tab-btn" data-tab="spin">SPIN Questions</button>
+      </div>
+      <div class="tab-panel active" id="panel-detailed">
+        <div class="report-content" id="content-detailed"></div>
+      </div>
+      <div class="tab-panel" id="panel-summary">
+        <div class="report-content" id="content-summary"></div>
+      </div>
+      <div class="tab-panel" id="panel-keythings">
+        <div class="report-content" id="content-keythings"></div>
+      </div>
+      <div class="tab-panel" id="panel-ponder">
+        <div class="report-content" id="content-ponder"></div>
+      </div>
+      <div class="tab-panel" id="panel-spin">
+        <div class="report-content" id="content-spin"></div>
+        <button class="secondary small" id="saveWordSpinBtn" style="margin-top: 16px;">Save as Word (this section only)</button>
+      </div>
+      <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line);">
+        <button class="secondary" id="saveWordAllBtn">Save as Word</button>
+        <div class="subtle" style="margin-top: 6px;">Saves all five sections in one document, in order.</div>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  const API = '/.netlify/functions';
+  const $ = (id) => document.getElementById(id);
+  const session = localStorage.getItem('prepdo_session');
+
+  if (!session) {
+    window.location.href = 'index.html';
+  }
+
+  let state = {
+    prospects: [],
+    currentProspect: null,
+    currentReports: [],
+    lastReport: null,
+    generatedFacts: ''
+  };
+
+  // ---------- View switching ----------
+  const VIEWS = ['view-list', 'view-new', 'view-detail', 'view-research', 'view-report', 'view-archived'];
+  function showView(name) {
+    VIEWS.forEach(v => $(v).classList.toggle('hidden', v !== 'view-' + name));
+  }
+
+  document.querySelectorAll('[data-back]').forEach(el => {
+    el.addEventListener('click', () => {
+      const target = el.getAttribute('data-back');
+      if (target === 'list') { showView('list'); loadProspects(); }
+      if (target === 'detail') { showView('detail'); }
+    });
+  });
+
+  // ---------- API helper ----------
+  async function api(functionName, body, timeoutMs = 45000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${API}/${functionName}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_token: session, ...body }),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const data = await res.json();
+      if (res.status === 401) {
+        localStorage.removeItem('prepdo_session');
+        window.location.href = 'index.html';
+        return null;
+      }
+      return data;
+    } catch (err) {
+      clearTimeout(timer);
+      if (err.name === 'AbortError') {
+        return { ok: false, message: 'This took too long and timed out. The server may still be working — try again, or type facts in manually below.' };
+      }
+      return { ok: false, message: 'Network error — please try again: ' + err.message };
+    }
+  }
+
+  // ---------- Minimal markdown to HTML ----------
+  function mdToHtml(md) {
+    if (!md || !md.trim()) return '<p style="color:#9B9B94;">Nothing here.</p>';
+    let html = md
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      // Force a paragraph break around a line that's ENTIRELY a bold
+      // phrase (e.g. "**Some Heading**") even if the source didn't put
+      // a full blank line after it — this was a real bug: AI-generated
+      // bold pseudo-headings sometimes ran straight into the next
+      // sentence with no visible break. Real #### headers (see BUILD 10
+      // presales-generate.js) avoid this going forward; this is a
+      // defensive fix for that pattern wherever it still appears.
+      .replace(/^\*\*(.+?)\*\*\s*$/gim, '\n\n**$1**\n\n')
+      .replace(/^#### (.*)$/gim, '<h4>$1</h4>')
+      .replace(/^### (.*)$/gim, '<h4>$1</h4>')
+      .replace(/^## (.*)$/gim, '<h3>$1</h3>')
+      .replace(/^# (.*)$/gim, '<h2>$1</h2>')
+      .replace(/\*\*(.*?)\*\*/g, '<b>$1</b>')
+      .replace(/\*(.*?)\*/g, '<i>$1</i>')
+      .replace(/^- (.*)$/gim, '<li>$1</li>');
+    html = html.replace(/(<li>[\s\S]*?<\/li>\n?)+/g, (m) => '<ul>' + m.replace(/\n/g, '') + '</ul>');
+    html = html.split(/\n\n+/).map(function (p) {
+      const trimmed = p.trim();
+      if (!trimmed) return '';
+      if (trimmed.indexOf('<h') === 0 || trimmed.indexOf('<ul') === 0) return trimmed;
+      return '<p>' + trimmed.replace(/\n/g, '<br>') + '</p>';
+    }).join('');
+    return html;
+  }
+
+  // ---------- Save as Word (client-side, no dependencies) ----------
+  // Wraps content in a real styled document (title block, company/contact
+  // metadata, PREPDO colors) instead of bare unstyled HTML — matches the
+  // look of reports built directly, not just plain black-text paragraphs.
+  function buildWordDocument(sectionLabel, prospect, htmlContent) {
+    const style = `
+      body { font-family: Calibri, Arial, sans-serif; color: #14213D; font-size: 11pt; }
+      h1 { color: #14213D; font-size: 20pt; margin-bottom: 2pt; }
+      .accent { color: #C87A3E; }
+      h2, h3 { color: #14213D; border-bottom: 1px solid #DCDCD6; padding-bottom: 4pt; margin-top: 18pt; }
+      h4 { color: #C87A3E; margin-top: 14pt; margin-bottom: 4pt; }
+      .meta { font-size: 10pt; margin-bottom: 3pt; }
+      .meta b { color: #3A4B78; }
+      .subtitle { color: #3A4B78; font-size: 10pt; text-transform: uppercase; letter-spacing: 1pt; margin-bottom: 16pt; }
+      hr { border: none; border-top: 1px solid #DCDCD6; margin: 12pt 0; }
+      p { line-height: 1.5; }
+      li { line-height: 1.5; margin-bottom: 4pt; }
+    `;
+    const title = `<h1>PREP<span class="accent">DO</span> &mdash; ${sectionLabel}</h1><div class="subtitle">Presales Prep Report</div>`;
+    const meta = `
+      <div class="meta"><b>Company:</b> ${prospect.company_name || ''}</div>
+      <div class="meta"><b>Contact:</b> ${prospect.prospect_name || '(not specified)'}${prospect.position ? ', ' + prospect.position : ''}</div>
+      <div class="meta"><b>Meeting Objective:</b> ${prospect.meeting_objective || '(not specified)'}</div>
+      <hr/>
+    `;
+    return `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+      <head><meta charset='utf-8'><title>${sectionLabel}</title><style>${style}</style></head>
+      <body>${title}${meta}${htmlContent}</body></html>`;
+  }
+
+  function saveAsWord(filename, fullHtmlDoc) {
+    const blob = new Blob(['\ufeff', fullHtmlDoc], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename + '.doc';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function formatDateForFilename(d) {
+    const dt = new Date(d);
+    const dd = String(dt.getDate()).padStart(2, '0');
+    const mm = String(dt.getMonth() + 1).padStart(2, '0');
+    const yyyy = dt.getFullYear();
+    return `${dd}-${mm}-${yyyy}`;
+  }
+
+  $('saveWordAllBtn').addEventListener('click', () => {
+    const report = state.lastReport;
+    const prospect = state.currentProspect;
+    if (!report || !prospect) return;
+
+    const idx = state.currentReports.findIndex(r => r.id === report.id);
+    const version = idx >= 0 ? (state.currentReports.length - idx) : state.currentReports.length;
+    const companyPart = (prospect.company_name || 'Report').replace(/[^a-z0-9]/gi, '_');
+    const datePart = formatDateForFilename(report.created_at || Date.now());
+    const filename = `${companyPart}_PresalesPrep_${datePart}_v${version}`;
+
+    // All five sections, in order, in one document — each starting with
+    // its own h2 divider so it reads as one coherent report rather than
+    // five disconnected fragments.
+    const combined = [
+      '<h2 style="margin-top:28px;">Detailed</h2>' + mdToHtml(report.ai_output_detailed),
+      '<h2 style="margin-top:28px;">Summary</h2>' + mdToHtml(report.ai_output_summary),
+      '<h2 style="margin-top:28px;">Key Things to Keep in Mind</h2>' + mdToHtml(report.ai_output_extra),
+      '<h2 style="margin-top:28px;">Points to Ponder</h2>' + mdToHtml(report.ai_output_ponder),
+      '<h2 style="margin-top:28px;">SPIN Questions</h2>' + mdToHtml(report.ai_output_spin)
+    ].join('');
+
+    const fullDoc = buildWordDocument('Presales Prep Report', prospect, combined);
+    saveAsWord(filename, fullDoc);
+  });
+
+  $('saveWordSpinBtn').addEventListener('click', () => {
+    const report = state.lastReport;
+    const prospect = state.currentProspect;
+    if (!report || !prospect) return;
+
+    const idx = state.currentReports.findIndex(r => r.id === report.id);
+    const version = idx >= 0 ? (state.currentReports.length - idx) : state.currentReports.length;
+    const companyPart = (prospect.company_name || 'Report').replace(/[^a-z0-9]/gi, '_');
+    const datePart = formatDateForFilename(report.created_at || Date.now());
+    const filename = `${companyPart}_SPINQuestions_${datePart}_v${version}`;
+
+    const fullDoc = buildWordDocument('SPIN Questions', prospect, mdToHtml(report.ai_output_spin));
+    saveAsWord(filename, fullDoc);
+  });
+
+  // ---------- Tabs ----------
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      btn.classList.add('active');
+      $('panel-' + btn.getAttribute('data-tab')).classList.add('active');
+    });
+  });
+
+  // ---------- Prospects List ----------
+  function caseNum(n) {
+    return '#' + String(n).padStart(3, '0');
+  }
+
+  // The two-question delete gate, shared by both the main list and the
+  // Archived list. Yes/Yes deletes; a No at either step cancels.
+  async function confirmAndDelete(prospectId, onDone) {
+    const sure = confirm('Are you sure you want to delete this prospect? This permanently deletes it and all its reports — this cannot be undone.');
+    if (!sure) return;
+    const downloaded = confirm('Have you downloaded/saved any reports you still need? Once deleted, they are gone for good.');
+    if (!downloaded) return;
+
+    const data = await api('prospects', { action: 'delete', prospect_id: prospectId });
+    if (!data) return;
+    if (!data.ok) {
+      alert('Delete failed: ' + data.message);
+      return;
+    }
+    onDone();
+  }
+
+  async function loadProspects() {
+    $('prospectsContainer').innerHTML = '<div class="spinner-msg">Loading...</div>';
+    const data = await api('prospects', { action: 'list', archived: false });
+    if (!data) return;
+    if (!data.ok) {
+      $('prospectsContainer').innerHTML = '<div class="status-msg error">' + escapeHtml(data.message) + '</div>';
+      return;
+    }
+    state.prospects = data.prospects;
+    if (data.prospects.length === 0) {
+      $('prospectsContainer').innerHTML = '<div class="empty-state">No prospects yet. Click "+ New Prospect" to add your first one.</div>';
+      return;
+    }
+    $('prospectsContainer').innerHTML = data.prospects.map(function (p) {
+      return '<div class="card prospect-card" data-id="' + p.id + '">' +
+        '<div><div class="name">' + caseNum(p.case_number) + ' \u00b7 ' + escapeHtml(p.prospect_name || '(no contact name)') + '</div>' +
+        '<div class="company">' + escapeHtml(p.company_name) + '</div></div>' +
+        '<div style="display:flex; align-items:center; gap:10px;">' +
+        '<span class="subtle">' + new Date(p.created_at).toLocaleDateString() + '</span>' +
+        '<button class="secondary small" data-archive-id="' + p.id + '">Archive</button>' +
+        '<button class="secondary small" data-delete-id="' + p.id + '" style="color:var(--red); border-color:var(--red);">Delete</button>' +
+        '</div></div>';
+    }).join('');
+
+    document.querySelectorAll('.prospect-card').forEach(card => {
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('button')) return; // clicks on Archive/Delete shouldn't open the detail view
+        openProspectDetail(card.getAttribute('data-id'));
+      });
+    });
+    document.querySelectorAll('[data-archive-id]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-archive-id');
+        const data = await api('prospects', { action: 'archive', prospect_id: id });
+        if (data && data.ok) loadProspects();
+        else if (data) alert('Archive failed: ' + data.message);
+      });
+    });
+    document.querySelectorAll('[data-delete-id]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        confirmAndDelete(btn.getAttribute('data-delete-id'), loadProspects);
+      });
+    });
+  }
+
+  async function loadArchivedProspects() {
+    $('archivedContainer').innerHTML = '<div class="spinner-msg">Loading...</div>';
+    const data = await api('prospects', { action: 'list', archived: true });
+    if (!data) return;
+    if (!data.ok) {
+      $('archivedContainer').innerHTML = '<div class="status-msg error">' + escapeHtml(data.message) + '</div>';
+      return;
+    }
+    if (data.prospects.length === 0) {
+      $('archivedContainer').innerHTML = '<div class="empty-state">Nothing archived.</div>';
+      return;
+    }
+    $('archivedContainer').innerHTML = data.prospects.map(function (p) {
+      return '<div class="card">' +
+        '<div><div class="name">' + caseNum(p.case_number) + ' \u00b7 ' + escapeHtml(p.prospect_name || '(no contact name)') + '</div>' +
+        '<div class="company">' + escapeHtml(p.company_name) + '</div></div>' +
+        '<div style="display:flex; align-items:center; gap:10px;">' +
+        '<button class="secondary small" data-makecurrent-id="' + p.id + '">Make Current</button>' +
+        '<button class="secondary small" data-delete-id="' + p.id + '" style="color:var(--red); border-color:var(--red);">Delete</button>' +
+        '</div></div>';
+    }).join('');
+
+    document.querySelectorAll('[data-makecurrent-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-makecurrent-id');
+        const data = await api('prospects', { action: 'unarchive', prospect_id: id });
+        if (data && data.ok) loadArchivedProspects();
+        else if (data) alert('Make Current failed: ' + data.message);
+      });
+    });
+    document.querySelectorAll('[data-delete-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        confirmAndDelete(btn.getAttribute('data-delete-id'), loadArchivedProspects);
+      });
+    });
+  }
+
+  $('viewArchivedLink').addEventListener('click', () => {
+    showView('archived');
+    loadArchivedProspects();
+  });
+
+  function escapeHtml(s) {
+    return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Keeps the rotating-bubble graphic visible while only the message
+  // text underneath it changes — used for "still processing" updates,
+  // as distinct from error states (which replace this with a plain red
+  // message, since the spinner shouldn't keep spinning once something
+  // has actually stopped/failed).
+  function spinnerHtml(text) {
+    return '<div class="spinner-orbit"><div class="spinner-track"></div><div class="spinner-rotator"><div class="spinner-bubble"></div></div></div>' + escapeHtml(text);
+  }
+
+  $('newProspectBtn').addEventListener('click', () => {
+    ['f_company_name','f_company_website','f_prospect_name','f_linkedin_url','f_position','f_meeting_objective','f_notes'].forEach(id => $(id).value = '');
+    $('newProspectStatus').textContent = '';
+    showView('new');
+  });
+
+  $('saveProspectBtn').addEventListener('click', async () => {
+    const body = {
+      action: 'create',
+      company_name: $('f_company_name').value.trim(),
+      company_website: $('f_company_website').value.trim(),
+      prospect_name: $('f_prospect_name').value.trim(),
+      linkedin_url: $('f_linkedin_url').value.trim(),
+      position: $('f_position').value.trim(),
+      meeting_objective: $('f_meeting_objective').value.trim(),
+      notes: $('f_notes').value.trim()
+    };
+    if (!body.company_name) {
+      $('newProspectStatus').textContent = 'Company name is required.';
+      $('newProspectStatus').className = 'status-msg error';
+      return;
+    }
+    $('saveProspectBtn').disabled = true;
+    const data = await api('prospects', body);
+    $('saveProspectBtn').disabled = false;
+    if (!data) return;
+    if (!data.ok) {
+      $('newProspectStatus').textContent = data.message;
+      $('newProspectStatus').className = 'status-msg error';
+      return;
+    }
+    openProspectDetail(data.prospect.id);
+  });
+
+  // ---------- Prospect Detail ----------
+  function renderReportHistory() {
+    if (state.currentReports.length === 0) {
+      $('generatePrepBtn').textContent = 'Generate Presales Prep';
+      $('prepCardSubtitle').textContent = 'Research the account and generate a prep report before your meeting.';
+      $('reportHistoryContainer').innerHTML = '<div class="subtle">No reports yet — generate a Presales Prep to get started.</div>';
+      return;
+    }
+
+    $('generatePrepBtn').textContent = 'Rerun with Additional Input';
+    $('prepCardSubtitle').textContent = 'A report already exists below. Add anything new, or rerun as-is.';
+
+    $('reportHistoryContainer').innerHTML = state.currentReports.map(function (r) {
+      const statusNote = r.status === 'pending' ? ' <span class="subtle">(still generating...)</span>'
+        : r.status === 'failed' ? ' <span class="status-msg error" style="display:inline;">(failed)</span>'
+        : '';
+      return '<div class="report-history-item" data-report-id="' + r.id + '">' +
+        '<span>' + (r.report_type === 'presales_prep' ? 'Presales Prep' : 'Meeting Analysis') + statusNote + '</span>' +
+        '<span class="subtle">' + new Date(r.created_at).toLocaleString() + '</span></div>';
+    }).join('');
+    document.querySelectorAll('.report-history-item').forEach(el => {
+      el.addEventListener('click', () => {
+        const report = state.currentReports.find(r => r.id === el.getAttribute('data-report-id'));
+        if (!report) return;
+        if (report.status === 'pending') {
+          alert('This report is still generating — check back in a moment.');
+          return;
+        }
+        if (report.status === 'failed') {
+          alert('This report failed to generate: ' + (report.error_message || 'Unknown error') + '\n\nTry generating again.');
+          return;
+        }
+        displayReport(report);
+      });
+    });
+  }
+
+  async function openProspectDetail(id) {
+    showView('detail');
+    $('detailCompanyName').textContent = 'Loading...';
+    $('reportHistoryContainer').innerHTML = '';
+    const data = await api('prospects', { action: 'get', prospect_id: id });
+    if (!data || !data.ok) {
+      $('detailCompanyName').textContent = 'Error loading prospect.';
+      return;
+    }
+    state.currentProspect = data.prospect;
+    state.currentReports = data.reports;
+    $('detailCompanyName').textContent = data.prospect.company_name;
+    const sub = [data.prospect.prospect_name, data.prospect.position].filter(Boolean).join(' \u00b7 ');
+    $('detailSubline').textContent = sub || '';
+
+    $('rerunInputBox').classList.add('hidden');
+    $('rerunAdditionalInput').value = '';
+
+    renderReportHistory();
+  }
+
+  // ---------- Presales Prep flow ----------
+  async function runFreshResearch() {
+    showView('research');
+    $('researchLoading').classList.remove('hidden');
+    $('researchResult').classList.add('hidden');
+    $('researchStatus').textContent = '';
+
+    const p = state.currentProspect;
+    const data = await api('presales-research', {
+      company_name: p.company_name,
+      company_website: p.company_website
+    });
+
+    $('researchLoading').classList.add('hidden');
+    $('researchResult').classList.remove('hidden');
+
+    if (!data) return;
+    if (!data.ok) {
+      $('confirmedFactsBox').value = '';
+      $('researchStatus').textContent = data.message || 'Research failed — you can still type facts manually below and continue.';
+      $('researchStatus').className = 'status-msg error';
+      return;
+    }
+    $('confirmedFactsBox').value = data.confirmed_facts;
+  }
+
+  $('generatePrepBtn').addEventListener('click', async () => {
+    if (state.currentReports.length === 0) {
+      // No report yet — normal fresh flow, straight into research.
+      await runFreshResearch();
+    } else {
+      // A report already exists — don't silently create a duplicate.
+      // Show the additional-input box instead of generating again.
+      $('rerunInputBox').classList.remove('hidden');
+    }
+  });
+
+  $('rerunCancelBtn').addEventListener('click', () => {
+    $('rerunInputBox').classList.add('hidden');
+  });
+
+  $('rerunContinueBtn').addEventListener('click', () => {
+    // Skip fresh web search — reuse the most recent report's Confirmed
+    // Facts and let the user layer new information on top, then go
+    // straight to the editable-facts screen (same screen fresh research
+    // would have landed on).
+    const latest = state.currentReports[0];
+    const additional = $('rerunAdditionalInput').value.trim();
+    let combined = latest ? (latest.confirmed_facts || '') : '';
+    if (additional) {
+      combined += (combined ? '\n\n' : '') + '### Additional Information (added by user)\n' + additional;
+    }
+    showView('research');
+    $('researchLoading').classList.add('hidden');
+    $('researchResult').classList.remove('hidden');
+    $('researchStatus').textContent = 'Reusing previous research, plus what you just added. Edit below if needed, then continue.';
+    $('researchStatus').className = 'status-msg success';
+    $('confirmedFactsBox').value = combined;
+  });
+
+  $('generateFullReportBtn').addEventListener('click', async () => {
+    const facts = $('confirmedFactsBox').value.trim();
+    if (!facts) {
+      $('researchStatus').textContent = 'Confirmed Facts cannot be empty — add at least a line or two.';
+      $('researchStatus').className = 'status-msg error';
+      return;
+    }
+    showView('report');
+    $('reportLoading').classList.remove('hidden');
+    $('reportResult').classList.add('hidden');
+    $('reportLoading').innerHTML = spinnerHtml('Starting report generation...');
+
+    const p = state.currentProspect;
+    const startData = await api('presales-generate-start', {
+      prospect_id: p.id,
+      prospect: p,
+      confirmed_facts: facts
+    });
+
+    if (!startData) return;
+    if (!startData.ok) {
+      $('reportLoading').innerHTML = '<div class="status-msg error">' + escapeHtml(startData.message) + '</div>';
+      return;
+    }
+
+    // No 30-second ceiling anymore — poll every 3s until the background
+    // function marks the report complete (or failed). Cap the overall
+    // wait at 5 minutes as a sane upper bound (Background Functions can
+    // run up to 15 min on Netlify, but a report this size shouldn't
+    // realistically need anywhere near that).
+    const reportId = startData.report_id;
+    const maxAttempts = 100; // 100 * 3s = 5 minutes
+    let attempts = 0;
+
+    const pollMessages = [
+      'Researching and reasoning through the sales strategy...',
+      'Still working — this one\u2019s taking a bit longer than usual...',
+      'Almost there, finishing up the report...'
+    ];
+
+    const poll = async () => {
+      attempts++;
+      $('reportLoading').innerHTML = spinnerHtml(pollMessages[Math.min(Math.floor(attempts / 15), pollMessages.length - 1)]);
+
+      const statusData = await api('check-report-status', { report_id: reportId }, 15000);
+      if (!statusData) return;
+
+      if (!statusData.ok) {
+        $('reportLoading').innerHTML = '<div class="status-msg error">' + escapeHtml(statusData.message) + '</div>';
+        return;
+      }
+
+      const report = statusData.report;
+
+      if (report.status === 'complete') {
+        displayReport(report);
+        state.currentReports.unshift(report);
+        renderReportHistory();
+        return;
+      }
+
+      if (report.status === 'failed') {
+        $('reportLoading').innerHTML = '<div class="status-msg error">Report generation failed: ' +
+          escapeHtml(report.error_message || 'Unknown error') + '</div>';
+        state.currentReports.unshift(report);
+        renderReportHistory();
+        return;
+      }
+
+      // Still 'pending' — keep polling.
+      if (attempts >= maxAttempts) {
+        $('reportLoading').innerHTML = '<div class="status-msg error">This is taking much longer than expected. It may still finish in the background — check Report History in a few minutes, or try again.</div>';
+        return;
+      }
+      setTimeout(poll, 3000);
+    };
+
+    poll();
+  });
+
+  function displayReport(report) {
+    state.lastReport = report;
+    showView('report');
+    $('reportLoading').classList.add('hidden');
+    $('reportResult').classList.remove('hidden');
+    $('content-detailed').innerHTML = mdToHtml(report.ai_output_detailed);
+    $('content-summary').innerHTML = mdToHtml(report.ai_output_summary);
+    $('content-keythings').innerHTML = mdToHtml(report.ai_output_extra);
+    $('content-ponder').innerHTML = mdToHtml(report.ai_output_ponder);
+    $('content-spin').innerHTML = mdToHtml(report.ai_output_spin);
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="detailed"]').classList.add('active');
+    $('panel-detailed').classList.add('active');
+  }
+
+  // ---------- Logout ----------
+  $('logoutBtn').addEventListener('click', () => {
+    localStorage.removeItem('prepdo_session');
+    window.location.href = 'index.html';
+  });
+
+  // ---------- Init ----------
+  (async function init() {
+    const data = await api('check-session', { session_token: session });
+    if (!data || !data.ok) {
+      localStorage.removeItem('prepdo_session');
+      window.location.href = 'index.html';
+      return;
+    }
+    $('userDisplay').textContent = data.name + (data.role === 'admin' ? ' (admin)' : '');
+    showView('list');
+    loadProspects();
+  })();
+</script>
+
+</body>
+</html>
