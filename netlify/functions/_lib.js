@@ -1,8 +1,10 @@
 // PREPDO — _lib.js
-// BUILD 3 | 2026-08-07
-// Changed this build: added getMemberFromSession() auth helper; added
-// callClaude()/extractText() for the Anthropic API; error messages now
-// name the specific missing env var instead of failing silently.
+// BUILD 16 | 2026-08-10
+// Added a 90s timeout to callClaude() — now that generation runs in a
+// Background Function (no more 30s ceiling), a hung Anthropic API call
+// had nothing to catch it, and could leave a report stuck at 'pending'
+// indefinitely with zero explanation. Now fails visibly and quickly
+// instead, letting the calling function's own error handling take over.
 
 // /netlify/functions/_lib.js
 //
@@ -77,6 +79,19 @@ async function supaPatch(path, body) {
   return res.json();
 }
 
+async function supaDelete(path) {
+  checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    method: 'DELETE',
+    headers: supaHeaders({ Prefer: 'return=representation' })
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Supabase DELETE ${path} failed: ${res.status} ${detail}`);
+  }
+  return res.json();
+}
+
 function generateToken() {
   return crypto.randomBytes(32).toString('base64url');
 }
@@ -128,22 +143,45 @@ async function getMemberFromSession(session_token) {
 }
 
 // Calls the Anthropic API. `tools` is optional (used for web search in
-// the Presales Prep research step). Returns the raw API response.
-async function callClaude({ system, messages, tools, max_tokens = 4096 }) {
+// the Presales Prep research step). `model` defaults to Sonnet but can
+// be overridden (e.g. Haiku for the fast research step, where search
+// quality — not model reasoning depth — is what actually matters).
+async function callClaude({ system, messages, tools, max_tokens = 4096, model = 'claude-sonnet-4-6', timeoutMs = 90000 }) {
   checkEnvVars('ANTHROPIC_API_KEY');
-  const body = { model: 'claude-sonnet-4-6', max_tokens, messages };
+  const body = { model, max_tokens, messages };
   if (system) body.system = system;
   if (tools) body.tools = tools;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
+  // Now that generation happens in a Background Function (no more 30s
+  // ceiling), a hung request to Anthropic's API had no safeguard at
+  // all — it could sit unresolved for a very long time with nothing to
+  // catch it, leaving a report stuck at 'pending' with no explanation.
+  // This bounds any single call to a sane maximum so it fails visibly
+  // instead (caught by the calling function's own try/catch, which
+  // already marks that section as failed without losing the others).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`Anthropic API call timed out after ${timeoutMs / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -163,7 +201,7 @@ function extractText(claudeResponse) {
 }
 
 module.exports = {
-  supaGet, supaPost, supaPatch,
+  supaGet, supaPost, supaPatch, supaDelete,
   generateToken, hashToken,
   respond, handleOptions,
   computeSubscriptionFields,
