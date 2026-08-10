@@ -1,18 +1,17 @@
 // PREPDO — presales-generate-start.js
-// BUILD 11 | 2026-08-09
-// New file this build: the fast, synchronous half of the new async
-// report-generation flow. Creates a 'pending' report row immediately
-// (a single fast DB insert, nowhere near the 30s ceiling), kicks off
-// presales-generate-background.js to do the actual AI work with no
-// time pressure (Background Functions run up to 15 minutes on
-// Netlify's Personal plan and above), and returns the report_id right
-// away so the frontend can start polling for completion.
-//
-// This replaces relying on one synchronous call to finish everything
-// within 30 seconds — which was failing intermittently in production
-// (confirmed via Netlify logs: repeated 504s clustered right at the
-// ~30s ceiling). Splitting into start + background + poll removes the
-// ceiling entirely rather than trying to out-run it.
+// BUILD 15 | 2026-08-10
+// Real bug fix: the trigger call to presales-generate-background only
+// checked for a thrown network-level exception, never the actual HTTP
+// response status. fetch() does NOT throw on a 404/500 — it just
+// returns that response normally. So if the background function ever
+// fails to trigger (confirmed cause once already: a missing .js
+// extension on its filename after a re-upload), this function would
+// silently treat that as success, leaving the report stuck at
+// 'pending' forever — no error, no explanation, just endless polling.
+// Confirmed via real logs: 3+ minutes of check-report-status calls,
+// zero presales-generate-background entries anywhere. Now checks
+// triggerRes.ok explicitly and marks the report 'failed' with the
+// actual status code if the trigger didn't succeed.
 
 const { getMemberFromSession, supaPost, supaPatch, respond, handleOptions } = require('./_lib.js');
 
@@ -58,7 +57,7 @@ exports.handler = async function (event) {
     // before it's actually sent. Awaiting the fast 202 avoids that.
     const bgUrl = `${process.env.URL || ''}/.netlify/functions/presales-generate-background`;
     try {
-      await fetch(bgUrl, {
+      const triggerRes = await fetch(bgUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -68,6 +67,25 @@ exports.handler = async function (event) {
           session_token
         })
       });
+
+      // BUILD 15 FIX: fetch() only throws on network-level failures
+      // (DNS, connection refused) — it does NOT throw on an HTTP error
+      // status like 404 or 500. Without this check, a background
+      // function that fails to trigger (e.g. a missing .js extension on
+      // its filename — this exact thing has happened before) would look
+      // like a success here, leaving the report stuck at 'pending'
+      // forever with no error, no explanation, and endless silent
+      // polling. Confirmed via real logs: dozens of check-report-status
+      // calls, no presales-generate-background entry anywhere — the
+      // trigger genuinely never started real work.
+      if (!triggerRes.ok) {
+        const detail = await triggerRes.text().catch(() => '');
+        await supaPatch(`reports?id=eq.${report.id}`, {
+          status: 'failed',
+          error_message: `Could not start report generation: background function returned ${triggerRes.status}. ${detail}`.trim()
+        });
+        return respond(200, { ok: true, report_id: report.id });
+      }
     } catch (triggerErr) {
       // If kicking off the background function fails outright (rare —
       // a network-level issue calling our own site), mark the row
