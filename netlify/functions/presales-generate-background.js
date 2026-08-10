@@ -1,11 +1,14 @@
 // PREPDO — presales-generate-background.js
-// BUILD 11 | 2026-08-09
-// New file this build. THE FILENAME SUFFIX "-background" IS REQUIRED —
-// Netlify specifically recognizes this pattern and treats the function
-// as a Background Function (up to 15 minutes execution, requires the
-// Personal plan or above). Do not rename this file without keeping
-// that suffix, or it silently becomes a normal 30s-limited function
-// again with no error telling you why.
+// BUILD 14 | 2026-08-10
+// Added a 4th parallel call: SPIN Questions (Situational/Problem/
+// Implication/Need-Payoff/Closing), a literal question bank rather than
+// narrative analysis — deliberately a departure from pure LMI-method
+// reasoning. Includes a conditional instruction for HR-type contacts
+// (detected from position/role keywords): Need-Payoff questions steer
+// away from forcing a revenue framing that often doesn't fit what HR
+// actually owns, toward succession planning / high-potential
+// development / capacity building / training ROI / leadership
+// effectiveness / productivity instead.
 //
 // This does the actual AI work — same 3-parallel-call approach as the
 // old presales-generate.js (facts / strategy / digest), but now with
@@ -150,100 +153,25 @@ Using the LMI sales context above, produce three condensed sections for a presal
   }
 }
 
-exports.handler = async function (event) {
-  let payload;
+// Rough keyword check for whether the contact sits in an HR/People
+// function rather than a business-operations role — used to steer
+// Need-Payoff questions away from forcing a revenue framing that often
+// doesn't fit what HR actually owns.
+function isHrRole(position) {
+  if (!position) return false;
+  const hrKeywords = /\b(HR|human resources?|people( ops| team| function)?|talent|L\s?&\s?D|learning\s*&?\s*development|CHRO|CPO|chief people)\b/i;
+  return hrKeywords.test(position);
+}
+
+async function generateSpin(prospect, confirmed_facts) {
   try {
-    payload = JSON.parse(event.body);
-  } catch (e) {
-    return { statusCode: 400, body: 'Invalid request.' };
-  }
+    const hrContact = isHrRole(prospect.position);
+    const hrCaution = hrContact
+      ? `\n\nIMPORTANT — this contact's role ("${prospect.position}") is an HR/People-function role, not a business-operations role. For Need-Payoff Questions specifically: business-revenue framing (asking what a result would be "worth" in revenue or cost-savings terms) often does not fit what HR actually owns or can answer. Frame Need-Payoff questions instead around outcomes HR genuinely owns — succession planning, high-potential development, capacity building, training ROI, leadership effectiveness, white-collar productivity — rather than forcing a business-results number where the real currency is people-development outcomes.`
+      : '';
 
-  const { report_id, prospect, confirmed_facts, session_token } = payload;
+    const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
 
-  if (!report_id || !prospect || !confirmed_facts) {
-    return { statusCode: 400, body: 'report_id, prospect, and confirmed_facts are required.' };
-  }
+---
 
-  try {
-    // This function has no HTTP-facing auth otherwise (it's only meant
-    // to be triggered by presales-generate-start.js, never called
-    // directly by the browser) — still worth checking the session is a
-    // real one, since the URL is technically guessable, and this
-    // function spends real API cost per invocation.
-    const member = await getMemberFromSession(session_token);
-    if (!member) {
-      return { statusCode: 401, body: 'Not authorized.' };
-    }
-
-    if (LMI_CONTEXT_LOAD_ERROR) {
-      await supaPatch(`reports?id=eq.${report_id}`, {
-        status: 'failed',
-        error_message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR
-      });
-      return { statusCode: 200, body: 'done (failed - context load)' };
-    }
-
-    // No 30s ceiling here — these can take as long as they genuinely
-    // need. Still run in parallel for speed, just without the pressure.
-    const [factsResult, strategyResult, digestResult] = await Promise.allSettled([
-      generateFacts(prospect, confirmed_facts),
-      generateStrategy(prospect, confirmed_facts),
-      generateDigest(prospect, confirmed_facts)
-    ]);
-
-    const results = [factsResult, strategyResult, digestResult].map((r) =>
-      r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
-    );
-
-    if (results.every((r) => !r.ok)) {
-      await supaPatch(`reports?id=eq.${report_id}`, {
-        status: 'failed',
-        error_message: 'Report generation failed on every section.'
-      });
-      return { statusCode: 200, body: 'done (failed - all sections)' };
-    }
-
-    const allSections = Object.assign({}, ...results.filter((r) => r.ok).map((r) => r.sections));
-    const failedParts = [];
-    if (!results[0].ok) failedParts.push('Confirmed Facts / Dynamics / Assumptions');
-    if (!results[1].ok) failedParts.push('Recommended Sales Strategy');
-    if (!results[2].ok) failedParts.push('Summary / Key Things / Points to Ponder');
-
-    const detailed = [
-      '## Confirmed Facts', allSections.CONFIRMED_FACTS || '(not generated)',
-      '', '## Likely Organizational Dynamics', allSections.LIKELY_DYNAMICS || '(not generated)',
-      '', '## Assumptions to Validate', allSections.ASSUMPTIONS || '(not generated)',
-      '', '## Recommended Sales Strategy', allSections.STRATEGY || '(not generated)'
-    ].join('\n');
-
-    let ponder = allSections.POINTS_TO_PONDER || '';
-    if (ponder && !/nothing further to flag/i.test(ponder)) {
-      ponder += '\n\n*The above might matter, might not matter — you judge.*';
-    }
-    if (failedParts.length > 0) {
-      ponder += (ponder ? '\n\n' : '') + `*(Note: generation of ${failedParts.join(', ')} didn't complete — you may want to rerun.)*`;
-    }
-
-    await supaPatch(`reports?id=eq.${report_id}`, {
-      ai_output_detailed: detailed,
-      ai_output_summary: allSections.SUMMARY || '',
-      ai_output_extra: allSections.KEY_THINGS || '',
-      ai_output_ponder: ponder,
-      status: 'complete'
-    });
-
-    return { statusCode: 200, body: 'done' };
-  } catch (err) {
-    try {
-      await supaPatch(`reports?id=eq.${report_id}`, {
-        status: 'failed',
-        error_message: 'Server error: ' + err.message
-      });
-    } catch (e2) {
-      // If even the failure-update fails, there's nothing more we can
-      // do from here — the frontend's polling will eventually time out
-      // its own wait and show a generic "still processing" message.
-    }
-    return { statusCode: 200, body: 'done (failed - exception)' };
-  }
-};
+This section is a
