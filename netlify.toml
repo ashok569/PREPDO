@@ -8,7 +8,15 @@
 # function package unless explicitly listed here. Without this, the file
 # exists in the repo but not in the actual running function (visible as
 # an ENOENT for /var/task/lmi-context.md at runtime).
+# BUILD 12: added presales-generate-background alongside the original
+# presales-generate — the async rewrite moved the actual file-reading
+# code into the new background function, but this config wasn't updated
+# to match, so it hit the identical missing-file error again under a
+# different function name.
 [functions."presales-generate"]
+  included_files = ["netlify/functions/lmi-context.md"]
+
+[functions."presales-generate-background"]
   included_files = ["netlify/functions/lmi-context.md"]
 
 [[redirects]]
