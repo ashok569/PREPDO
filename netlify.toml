@@ -19,6 +19,12 @@
 [functions."presales-generate-background"]
   included_files = ["netlify/functions/lmi-context.md"]
 
+# BUILD 21: Meeting Analysis's background function also reads
+# lmi-context.md at runtime — same rule applies, remembered proactively
+# this time instead of discovered via another production failure.
+[functions."meeting-analysis-background"]
+  included_files = ["netlify/functions/lmi-context.md"]
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
