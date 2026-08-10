@@ -1,10 +1,14 @@
 // PREPDO — _lib.js
-// BUILD 16 | 2026-08-10
-// Added a 90s timeout to callClaude() — now that generation runs in a
-// Background Function (no more 30s ceiling), a hung Anthropic API call
-// had nothing to catch it, and could leave a report stuck at 'pending'
-// indefinitely with zero explanation. Now fails visibly and quickly
-// instead, letting the calling function's own error handling take over.
+// BUILD 22 | 2026-08-10
+// Real bug fix: confirmed via a genuinely stuck Meeting Analysis report
+// (status 'pending', error_message NULL, hours later) that the BUILD 16
+// timeout fix only covered callClaude() — every Supabase call (supaGet/
+// supaPost/supaPatch/supaDelete) still had zero timeout protection at
+// all. Since getMemberFromSession() — the very first thing every
+// background function does — calls supaGet(), a single hung Supabase
+// request could stall the entire function before it ever reached any
+// of its own error-handling code. Added a shared timedFetch() helper
+// (20s timeout) and routed all four Supabase functions through it.
 
 // /netlify/functions/_lib.js
 //
@@ -41,9 +45,33 @@ function checkEnvVars(...names) {
   }
 }
 
+// Shared timeout-protected fetch — BUILD 22 fix. Every Supabase call
+// used to have zero timeout protection at all (only callClaude got
+// this treatment in BUILD 16). Confirmed via a real stuck report: a
+// background function hung indefinitely at its very FIRST line —
+// getMemberFromSession(), which calls supaGet() — with the row left at
+// 'pending' forever and no error_message, because the code never even
+// reached any of its own error-handling; it was still waiting on a
+// single fetch() with no time limit. 20s is generous for what should
+// normally be a fast database call.
+async function timedFetch(url, options, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error(`Request to ${url} timed out after ${timeoutMs / 1000}s`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function supaGet(path) {
   checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: supaHeaders() });
+  const res = await timedFetch(`${SUPABASE_URL}/rest/v1/${path}`, { headers: supaHeaders() });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     throw new Error(`Supabase GET ${path} failed: ${res.status} ${detail}`);
@@ -53,7 +81,7 @@ async function supaGet(path) {
 
 async function supaPost(path, body) {
   checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  const res = await timedFetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'POST',
     headers: supaHeaders({ Prefer: 'return=representation' }),
     body: JSON.stringify(body)
@@ -67,7 +95,7 @@ async function supaPost(path, body) {
 
 async function supaPatch(path, body) {
   checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  const res = await timedFetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'PATCH',
     headers: supaHeaders({ Prefer: 'return=representation' }),
     body: JSON.stringify(body)
@@ -81,7 +109,7 @@ async function supaPatch(path, body) {
 
 async function supaDelete(path) {
   checkEnvVars('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY');
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+  const res = await timedFetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     method: 'DELETE',
     headers: supaHeaders({ Prefer: 'return=representation' })
   });
