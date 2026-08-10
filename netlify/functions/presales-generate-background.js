@@ -1,5 +1,14 @@
 // PREPDO — presales-generate-background.js
-// BUILD 14 | 2026-08-10
+// BUILD 16 | 2026-08-10
+// Real bug fix: if the session-auth check inside this function ever
+// failed, it returned immediately WITHOUT ever updating the report row
+// — leaving it stuck at 'pending' forever with zero explanation, even
+// though report_id was fully known at that point. Now marks the report
+// 'failed' with a clear reason before returning. Also see _lib.js
+// BUILD 16 — the underlying Anthropic API calls now have a 90s timeout,
+// closing a related gap where a hung call had nothing to catch it once
+// generation moved off the old 30s-limited synchronous path.
+//
 // Added a 4th parallel call: SPIN Questions (Situational/Problem/
 // Implication/Need-Payoff/Closing), a literal question bank rather than
 // narrative analysis — deliberately a departure from pure LMI-method
@@ -174,4 +183,150 @@ async function generateSpin(prospect, confirmed_facts) {
 
 ---
 
-This section is a
+This section is a deliberate departure from narrative LMI-method reasoning into a straightforward, literal question bank the salesperson can bring into the meeting — specific, tailored questions for THIS company and contact, not generic textbook examples.
+
+Produce five sections, each a short bulleted list of 3-5 specific questions, following the standard SPIN structure. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
+
+### SITUATIONAL_QUESTIONS
+(fact-finding questions to establish context — current setup, scale, process)
+
+### PROBLEM_QUESTIONS
+(surface difficulties, dissatisfactions, or friction points, grounded in the confirmed facts and likely dynamics above)
+
+### IMPLICATION_QUESTIONS
+(explore the consequences/cost of the problems staying unaddressed)
+
+### NEED_PAYOFF_QUESTIONS
+(get the prospect to state the value of solving the problem, in their own words)${hrCaution}
+
+### CLOSING_QUESTIONS
+(questions that move toward next steps — gauge interest, timeline, who else needs to be involved)`;
+
+    const res = await callClaude({
+      system: LMI_CONTEXT,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1400
+    });
+    return { ok: true, sections: parseMarkers(extractText(res), ['SITUATIONAL_QUESTIONS', 'PROBLEM_QUESTIONS', 'IMPLICATION_QUESTIONS', 'NEED_PAYOFF_QUESTIONS', 'CLOSING_QUESTIONS']) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+exports.handler = async function (event) {
+  let payload;
+  try {
+    payload = JSON.parse(event.body);
+  } catch (e) {
+    return { statusCode: 400, body: 'Invalid request.' };
+  }
+
+  const { report_id, prospect, confirmed_facts, session_token } = payload;
+
+  if (!report_id || !prospect || !confirmed_facts) {
+    return { statusCode: 400, body: 'report_id, prospect, and confirmed_facts are required.' };
+  }
+
+  try {
+    // This function has no HTTP-facing auth otherwise (it's only meant
+    // to be triggered by presales-generate-start.js, never called
+    // directly by the browser) — still worth checking the session is a
+    // real one, since the URL is technically guessable, and this
+    // function spends real API cost per invocation.
+    const member = await getMemberFromSession(session_token);
+    if (!member) {
+      // BUILD 16 FIX: this used to return here without ever updating
+      // the report row — leaving it stuck at 'pending' forever with no
+      // explanation, since report_id is fully known at this point.
+      await supaPatch(`reports?id=eq.${report_id}`, {
+        status: 'failed',
+        error_message: 'Session check failed inside the background worker (not logged in, or session expired between starting and running the job).'
+      });
+      return { statusCode: 401, body: 'Not authorized.' };
+    }
+
+    if (LMI_CONTEXT_LOAD_ERROR) {
+      await supaPatch(`reports?id=eq.${report_id}`, {
+        status: 'failed',
+        error_message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR
+      });
+      return { statusCode: 200, body: 'done (failed - context load)' };
+    }
+
+    // No 30s ceiling here — these can take as long as they genuinely
+    // need. Still run in parallel for speed, just without the pressure.
+    const [factsResult, strategyResult, digestResult, spinResult] = await Promise.allSettled([
+      generateFacts(prospect, confirmed_facts),
+      generateStrategy(prospect, confirmed_facts),
+      generateDigest(prospect, confirmed_facts),
+      generateSpin(prospect, confirmed_facts)
+    ]);
+
+    const results = [factsResult, strategyResult, digestResult, spinResult].map((r) =>
+      r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
+    );
+
+    if (results.every((r) => !r.ok)) {
+      await supaPatch(`reports?id=eq.${report_id}`, {
+        status: 'failed',
+        error_message: 'Report generation failed on every section.'
+      });
+      return { statusCode: 200, body: 'done (failed - all sections)' };
+    }
+
+    const allSections = Object.assign({}, ...results.filter((r) => r.ok).map((r) => r.sections));
+    const failedParts = [];
+    if (!results[0].ok) failedParts.push('Confirmed Facts / Dynamics / Assumptions');
+    if (!results[1].ok) failedParts.push('Recommended Sales Strategy');
+    if (!results[2].ok) failedParts.push('Summary / Key Things / Points to Ponder');
+    if (!results[3].ok) failedParts.push('SPIN Questions');
+
+    const detailed = [
+      '## Confirmed Facts', allSections.CONFIRMED_FACTS || '(not generated)',
+      '', '## Likely Organizational Dynamics', allSections.LIKELY_DYNAMICS || '(not generated)',
+      '', '## Assumptions to Validate', allSections.ASSUMPTIONS || '(not generated)',
+      '', '## Recommended Sales Strategy', allSections.STRATEGY || '(not generated)'
+    ].join('\n');
+
+    let ponder = allSections.POINTS_TO_PONDER || '';
+    if (ponder && !/nothing further to flag/i.test(ponder)) {
+      ponder += '\n\n*The above might matter, might not matter — you judge.*';
+    }
+    if (failedParts.length > 0) {
+      ponder += (ponder ? '\n\n' : '') + `*(Note: generation of ${failedParts.join(', ')} didn't complete — you may want to rerun.)*`;
+    }
+
+    const spinIntro = 'These could be possible question types to draw on for this meeting — not a script, a menu to pick from.\n\n';
+    const spin = results[3].ok ? [
+      spinIntro,
+      '### Situational Questions', allSections.SITUATIONAL_QUESTIONS || '(not generated)',
+      '', '### Problem Questions', allSections.PROBLEM_QUESTIONS || '(not generated)',
+      '', '### Implication Questions', allSections.IMPLICATION_QUESTIONS || '(not generated)',
+      '', '### Need-Payoff Questions', allSections.NEED_PAYOFF_QUESTIONS || '(not generated)',
+      '', '### Closing Questions', allSections.CLOSING_QUESTIONS || '(not generated)'
+    ].join('\n') : '';
+
+    await supaPatch(`reports?id=eq.${report_id}`, {
+      ai_output_detailed: detailed,
+      ai_output_summary: allSections.SUMMARY || '',
+      ai_output_extra: allSections.KEY_THINGS || '',
+      ai_output_ponder: ponder,
+      ai_output_spin: spin,
+      status: 'complete'
+    });
+
+    return { statusCode: 200, body: 'done' };
+  } catch (err) {
+    try {
+      await supaPatch(`reports?id=eq.${report_id}`, {
+        status: 'failed',
+        error_message: 'Server error: ' + err.message
+      });
+    } catch (e2) {
+      // If even the failure-update fails, there's nothing more we can
+      // do from here — the frontend's polling will eventually time out
+      // its own wait and show a generic "still processing" message.
+    }
+    return { statusCode: 200, body: 'done (failed - exception)' };
+  }
+};
