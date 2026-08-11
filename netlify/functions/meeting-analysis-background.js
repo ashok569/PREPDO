@@ -1,7 +1,21 @@
 // PREPDO — meeting-analysis-background.js
-// BUILD 21 | 2026-08-10
-// New file. THE FILENAME SUFFIX "-background" IS REQUIRED — same rule
-// as presales-generate-background.js. Do not rename without keeping it.
+// BUILD 24 | 2026-08-11
+// Removed the "The above might matter, might not matter — you judge"
+// caveat line from Points to Ponder — not needed here (kept as-is in
+// Presales Prep's version, only removed for Meeting Analysis).
+//
+// BUILD 22 | 2026-08-10
+// Real bug fix from reviewing the first successful real report: Summary
+// and Overall Score both came back "(not generated)" — the "core" call
+// asked for DETAILED + SUMMARY + OVERALL_SCORE in one response with
+// max_tokens: 2600, and DETAILED alone (a genuinely thorough,
+// stage-by-stage narrative) used up the entire budget, cutting off
+// before SUMMARY/OVERALL_SCORE were ever generated. Split into two
+// separate parallel calls: generateDetailed (its own generous 3500
+// token budget, nothing competing with it) and generateSummaryScore
+// (a small, protected budget that can no longer be starved by however
+// long Detailed happens to run). Now 4 parallel calls total instead of
+// 3 — no time-pressure concern, still a Background Function.
 //
 // Produces the 8 Meeting Analysis outputs, mapped onto `reports`
 // columns like this (7 display tabs, since Score+Probability share one
@@ -138,16 +152,36 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
   return parts.join('\n\n');
 }
 
-async function generateCore(prospect, meeting) {
+async function generateDetailed(prospect, meeting) {
+  try {
+    const prompt = `${buildMeetingBlock(prospect, meeting)}
+
+---
+
+Using the LMI sales context above, analyze this meeting. Respond with EXACTLY this markdown section header, nothing before it or after the content:
+
+### DETAILED
+(genuine narrative analysis of how the meeting actually went, stage by stage through the Sales Cycle — Rapport/Credibility/Trust, Probing, PBM, Needs=Motives, RRR, Urgency, Stalls&Objections, Closing, Referrals. Note explicitly where the salesperson followed the cycle well and where they diverged. When assessing talk-ratio, remember the first 5-10 minutes (R-C-T opening) is intentionally salesperson-heavy — only judge the 20/80 ratio for what happens AFTER the permission-to-probe transition.)`;
+
+    const res = await callClaude({
+      system: LMI_CONTEXT,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 3500
+    });
+    const sections = parseMarkers(extractText(res), ['DETAILED']);
+    return { ok: true, sections };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function generateSummaryScore(prospect, meeting) {
   try {
     const prompt = `${buildMeetingBlock(prospect, meeting)}
 
 ---
 
 Using the LMI sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
-
-### DETAILED
-(genuine narrative analysis of how the meeting actually went, stage by stage through the Sales Cycle — Rapport/Credibility/Trust, Probing, PBM, Needs=Motives, RRR, Urgency, Stalls&Objections, Closing, Referrals. Note explicitly where the salesperson followed the cycle well and where they diverged. When assessing talk-ratio, remember the first 5-10 minutes (R-C-T opening) is intentionally salesperson-heavy — only judge the 20/80 ratio for what happens AFTER the permission-to-probe transition.)
 
 ### SUMMARY
 (condensed version, a few short paragraphs, readable in two minutes)
@@ -159,9 +193,9 @@ Then a blank line, then 2-3 sentences of reasoning grounded in specific, named c
     const res = await callClaude({
       system: LMI_CONTEXT,
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2600
+      max_tokens: 1000
     });
-    const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE']);
+    const sections = parseMarkers(extractText(res), ['SUMMARY', 'OVERALL_SCORE']);
     return { ok: true, sections };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -256,13 +290,14 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
-    const [coreResult, scoringResult, gapsResult] = await Promise.allSettled([
-      generateCore(prospect, meeting),
+    const [detailedResult, summaryScoreResult, scoringResult, gapsResult] = await Promise.allSettled([
+      generateDetailed(prospect, meeting),
+      generateSummaryScore(prospect, meeting),
       generateScoring(prospect, meeting),
       generateGaps(prospect, meeting)
     ]);
 
-    const results = [coreResult, scoringResult, gapsResult].map((r) =>
+    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult].map((r) =>
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
 
@@ -276,9 +311,10 @@ exports.handler = async function (event) {
 
     const allSections = Object.assign({}, ...results.filter((r) => r.ok).map((r) => r.sections));
     const failedParts = [];
-    if (!results[0].ok) failedParts.push('Detailed / Summary / Score');
-    if (!results[1].ok) failedParts.push('Probability of Close / Recommended Actions');
-    if (!results[2].ok) failedParts.push('Missed Items / Opportunities / Points to Ponder');
+    if (!results[0].ok) failedParts.push('Detailed');
+    if (!results[1].ok) failedParts.push('Summary / Score');
+    if (!results[2].ok) failedParts.push('Probability of Close / Recommended Actions');
+    if (!results[3].ok) failedParts.push('Missed Items / Opportunities / Points to Ponder');
 
     const scoreParsed = extractLeadingNumber(allSections.OVERALL_SCORE, 'SCORE');
     const probParsed = extractLeadingNumber(allSections.PROBABILITY_OF_CLOSE, 'PROBABILITY');
@@ -304,9 +340,6 @@ exports.handler = async function (event) {
     }
 
     let ponder = allSections.POINTS_TO_PONDER || '';
-    if (ponder && !/nothing further to flag/i.test(ponder)) {
-      ponder += '\n\n*The above might matter, might not matter — you judge.*';
-    }
     if (failedParts.length > 0) {
       ponder += (ponder ? '\n\n' : '') + `*(Note: generation of ${failedParts.join(', ')} didn't complete — you may want to rerun.)*`;
     }
