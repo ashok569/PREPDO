@@ -1,4 +1,13 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 29 | 2026-08-11
+// Small real bug fixed after reviewing the first actual Role Play
+// report: Next Practice showed a stray, meaningless "--" bullet at the
+// end of the list — caused by a standalone "---" divider line in the
+// AI's output only having its first dash stripped by the old regex.
+// Same fix applied to meeting-analysis-background.js, which has the
+// identical pattern. Now strips all leading dashes/asterisks and drops
+// any resulting line with no real letters or digits.
+//
 // BUILD 27 | 2026-08-11
 // New file. THE FILENAME SUFFIX "-background" IS REQUIRED — same rule
 // as the other background functions. Unlike roleplay-turn.js, this DOES
@@ -149,8 +158,11 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
 
     const nextPracticeText = sections.NEXT_PRACTICE || '';
     const nextPracticeArray = nextPracticeText.split('\n')
-      .map((l) => l.replace(/^[-*]\s*/, '').trim())
-      .filter((l) => l.length > 0);
+      // Same fix as meeting-analysis-background.js: a standalone "---"
+      // divider line only had its first dash stripped, leaving a stray
+      // "--" bullet with no content. Confirmed via a real report.
+      .map((l) => l.replace(/^[-*]+\s*/, '').trim())
+      .filter((l) => l.length > 0 && /[a-zA-Z0-9]/.test(l));
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       ai_output_detailed: detailed,
