@@ -1,4 +1,18 @@
 // PREPDO — meeting-analysis-background.js
+// BUILD 25 | 2026-08-11
+// Real bug fix: Summary showed "(not generated)" with no error or
+// failure note anywhere — confirmed root cause: parseMarkers()'s regex
+// was case-SENSITIVE, so when the AI wrote "### Summary" instead of
+// the exact "### SUMMARY" requested, it simply never matched — no
+// exception, the section just silently vanished. OVERALL_SCORE
+// survived in the same response because its format instruction is far
+// more rigid than Summary's looser one, so the AI was less likely to
+// drift on it. Now case-insensitive, with captured keys normalized to
+// uppercase for reliable lookup regardless of actual AI casing.
+// Reproduced and verified fixed against the exact failure before
+// shipping. Same fix applied proactively to presales-generate-
+// background.js too, since it shares the identical pattern.
+//
 // BUILD 24 | 2026-08-11
 // Removed the "The above might matter, might not matter — you judge"
 // caveat line from Points to Ponder — not needed here (kept as-is in
@@ -69,11 +83,20 @@ function parseMarkers(text, markers) {
   const result = {};
   const pattern = new RegExp(
     `### (${markers.join('|')})\\s*\\n([\\s\\S]*?)(?=\\n### (?:${markers.join('|')})\\s*\\n|$)`,
-    'g'
+    'gi'
   );
   let m;
   while ((m = pattern.exec(text)) !== null) {
-    result[m[1]] = m[2].trim();
+    // Normalize to uppercase regardless of how the AI actually cased the
+    // header (BUILD 25 fix — confirmed root cause of a silent, no-error
+    // content loss: the AI wrote "### Summary" instead of the exact
+    // "### SUMMARY" requested, and the old case-sensitive regex simply
+    // never matched it at all. No exception was thrown — the section
+    // just silently never made it into the result, which is why no
+    // failure note appeared anywhere. OVERALL_SCORE survived in the
+    // same response because its format instruction is far more rigid
+    // ("the FIRST line must be exactly...") than Summary's looser one.
+    result[m[1].toUpperCase()] = m[2].trim();
   }
   return result;
 }
