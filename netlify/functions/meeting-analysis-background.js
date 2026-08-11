@@ -21,3 +21,4 @@
 //   2. "scoring" — Probability of Close, Recommended Actions
 //   3. "gaps"    — Missed Items, Emergent Opportunities, Points to Ponder
 // All three get the full lmi-context.md — unlike Presales Prep,
+
