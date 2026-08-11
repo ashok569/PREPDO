@@ -1,4 +1,12 @@
 // PREPDO — meeting-analysis-background.js
+// BUILD 26 | 2026-08-11
+// Small real bug found reviewing an actual Role Play report (same
+// bullet-parsing pattern used there): a standalone "---" line in the
+// AI's output only had its first dash stripped by the old regex,
+// leaving a stray, meaningless "--" bullet in Recommended Actions. Now
+// strips all leading dashes/asterisks and drops any resulting line
+// with no real letters or digits.
+//
 // BUILD 25 | 2026-08-11
 // Real bug fix: Summary showed "(not generated)" with no error or
 // failure note anywhere — confirmed root cause: parseMarkers()'s regex
@@ -353,8 +361,13 @@ exports.handler = async function (event) {
     // the jsonb column, one string per bullet line.
     const actionsText = allSections.RECOMMENDED_ACTIONS || '';
     const actionsArray = actionsText.split('\n')
-      .map((l) => l.replace(/^[-*]\s*/, '').trim())
-      .filter((l) => l.length > 0);
+      // BUILD 26 fix: a standalone "---" line (the AI sometimes adds
+      // these as section dividers) only had its FIRST dash stripped by
+      // the old regex, leaving a stray "--" as its own meaningless
+      // bullet. Now strips ALL leading dashes/asterisks, and drops any
+      // line left with no actual letters or digits.
+      .map((l) => l.replace(/^[-*]+\s*/, '').trim())
+      .filter((l) => l.length > 0 && /[a-zA-Z0-9]/.test(l));
 
     // The "asked for referrals = No" auto-reminder — enforced in code,
     // not left to the AI to remember to include.
