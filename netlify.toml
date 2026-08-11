@@ -25,6 +25,11 @@
 [functions."meeting-analysis-background"]
   included_files = ["netlify/functions/lmi-context.md"]
 
+# BUILD 27: Role Play's debrief background function also reads
+# lmi-context.md — added proactively from the start this time.
+[functions."roleplay-debrief-background"]
+  included_files = ["netlify/functions/lmi-context.md"]
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
