@@ -1,4 +1,13 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 30 | 2026-08-12
+// LMI/Non-LMI segmentation. Same fix as meeting-analysis-background.js
+// Build 27: the DETAILED prompt's stage list was hardcoded with LMI
+// terms directly in the prompt TEXT (PBM, Sales Cycle stages), not
+// just relying on the system context. Added stageListForSegment() so
+// the prompt itself asks for the right vocabulary per the requesting
+// member's user_segment (migration_v7.sql). Now loads both lmi-
+// context.md and spin-context.md, picks per-request.
+//
 // BUILD 29 | 2026-08-11
 // Small real bug fixed after reviewing the first actual Role Play
 // report: Next Practice showed a stray, meaningless "--" bullet at the
@@ -51,6 +60,36 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
+// BUILD 30: LMI/Non-LMI segmentation — see presales-generate-
+// background.js for the full rationale, identical pattern here.
+const SPIN_CANDIDATE_PATHS = [
+  path.join(__dirname, 'spin-context.md'),
+  path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
+  path.join(process.cwd(), 'netlify', 'functions', 'spin-context.md'),
+  '/var/task/spin-context.md',
+  '/var/task/netlify/functions/spin-context.md'
+];
+
+let SPIN_CONTEXT;
+let SPIN_CONTEXT_LOAD_ERROR = null;
+try {
+  const foundPath = SPIN_CANDIDATE_PATHS.find((p) => fs.existsSync(p));
+  if (!foundPath) throw new Error(`Not found in any of: ${SPIN_CANDIDATE_PATHS.join(', ')}`);
+  SPIN_CONTEXT = fs.readFileSync(foundPath, 'utf8');
+} catch (err) {
+  SPIN_CONTEXT_LOAD_ERROR = err.message;
+}
+
+// Same fix as meeting-analysis-background.js: the stage list was
+// hardcoded with LMI terms directly in the prompt TEXT, not just the
+// system context — swapping only the context file would not have been
+// enough on its own.
+function stageListForSegment(isNonLmi) {
+  return isNonLmi
+    ? 'Situation, Problem, Implication, Need-Payoff, handling any objections that came up, closing/next-step'
+    : 'Rapport/Credibility, Probing/Situation-Problem-Implication, PBM, Need-Payoff, Urgency, handling any objections that came up, closing/next-step';
+}
+
 function parseMarkers(text, markers) {
   const result = {};
   const pattern = new RegExp(
@@ -101,10 +140,17 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    if (LMI_CONTEXT_LOAD_ERROR) {
+    // BUILD 30: LMI/Non-LMI segmentation — see presales-generate-
+    // background.js for the full rationale, identical pattern here.
+    const isNonLmi = member.user_segment === 'non_lmi';
+    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
+    const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
-        error_message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR
+        error_message: `${METHODOLOGY_LABEL} failed to load: ` + METHODOLOGY_LOAD_ERROR
       });
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
@@ -126,10 +172,10 @@ ${transcript}
 
 ---
 
-Using the LMI sales context above, evaluate the SALESPERSON's performance in this practice conversation (not the AI-played prospect — that side was just simulation for practice). Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the sales context above, evaluate the SALESPERSON's performance in this practice conversation (not the AI-played prospect — that side was just simulation for practice). Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
 
 ### DETAILED
-(genuine stage-by-stage analysis of how the conversation went, referencing the actual Sales Cycle stages and SPIN questioning where relevant — Rapport/Credibility, Probing/Situation-Problem-Implication, PBM, Need-Payoff, Urgency, handling any objections that came up, closing/next-step. Note specifically what was done well and what diverged from good practice, grounded in what was actually said, not generic advice.)
+(genuine stage-by-stage analysis of how the conversation went, referencing: ${stageListForSegment(isNonLmi)}. Note specifically what was done well and what diverged from good practice, grounded in what was actually said, not generic advice.)
 
 ### SUMMARY
 (a condensed version, readable in two minutes)
@@ -145,7 +191,7 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
 (a neutral reflection space for genuine ambiguity or a tentative hunch about this practice session. May be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: METHODOLOGY_CONTEXT,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 3500
     });
