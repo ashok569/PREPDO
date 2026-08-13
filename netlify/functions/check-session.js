@@ -1,7 +1,10 @@
 // PREPDO — check-session.js
-// BUILD 3 | 2026-08-07 (carried over unchanged from Build 2)
-// Build 2 fix: this file's missing try/catch was the direct cause of the
-// 500/502 errors during initial login testing — now fixed and stable.
+// BUILD 4 | 2026-08-12
+// Now also returns user_segment (migration_v7.sql) — the frontend uses
+// this to relabel LMI-specific form fields (PBM, RRR, "Sales Cycle")
+// with generic equivalents for Non-LMI users, since the segmentation
+// work so far only touched AI reasoning, not the form the user
+// actually sees and fills in themselves.
 
 // /netlify/functions/check-session.js
 //
@@ -49,6 +52,7 @@ exports.handler = async function (event) {
       ok: true,
       name: member.name,
       role: member.key_type,
+      user_segment: member.user_segment,
       subscription_status: member.subscription_status
     });
   } catch (err) {
