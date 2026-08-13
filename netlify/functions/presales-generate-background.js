@@ -1,4 +1,29 @@
 // PREPDO — presales-generate-background.js
+// BUILD 18 | 2026-08-12
+// LMI/Non-LMI segmentation. Now loads BOTH lmi-context.md and the new
+// spin-context.md independently at module level, and picks which one
+// to actually use per-request based on the requesting member's
+// user_segment (from migration_v7.sql) — 'lmi' gets the existing full
+// LMI-flavored reasoning, 'non_lmi' gets pure SPIN + generic
+// consultative-selling reasoning with zero LMI-specific terminology.
+// Every prompt that previously said "the LMI sales context" now says
+// "the sales context" (segment-neutral phrasing), and the Strategy
+// prompt's illustrative example header was changed from the LMI-
+// specific "EDM and Success-Bar Calibration" to a generic
+// "Key Considerations for This Meeting" — it's only there to
+// demonstrate the #### formatting rule, the content was never load-
+// bearing, so no reason for it to carry LMI branding either way.
+//
+// BUILD 17 | 2026-08-11
+// Proactive fix — same bug confirmed and fixed in meeting-analysis-
+// background.js: parseMarkers()'s regex was case-SENSITIVE, so a
+// section whose AI-generated header casing drifted even slightly from
+// exactly what was requested (e.g. "### Summary" instead of
+// "### SUMMARY") would silently vanish with no error anywhere. Not
+// yet reported as a symptom here, but it's the identical pattern, so
+// fixed before it causes the same silent content loss. Now
+// case-insensitive, with captured keys normalized to uppercase.
+//
 // BUILD 16 | 2026-08-10
 // Real bug fix: if the session-auth check inside this function ever
 // failed, it returned immediately WITHOUT ever updating the report row
@@ -49,15 +74,43 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
+// BUILD 30: LMI/Non-LMI segmentation. Non-LMI users get spin-context.md
+// instead — same file-finding pattern, loaded independently so one
+// missing file doesn't block the segment that doesn't need it.
+const SPIN_CANDIDATE_PATHS = [
+  path.join(__dirname, 'spin-context.md'),
+  path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
+  path.join(process.cwd(), 'netlify', 'functions', 'spin-context.md'),
+  '/var/task/spin-context.md',
+  '/var/task/netlify/functions/spin-context.md'
+];
+
+let SPIN_CONTEXT;
+let SPIN_CONTEXT_LOAD_ERROR = null;
+try {
+  const foundPath = SPIN_CANDIDATE_PATHS.find((p) => fs.existsSync(p));
+  if (!foundPath) throw new Error(`Not found in any of: ${SPIN_CANDIDATE_PATHS.join(', ')}`);
+  SPIN_CONTEXT = fs.readFileSync(foundPath, 'utf8');
+} catch (err) {
+  SPIN_CONTEXT_LOAD_ERROR = err.message;
+}
+
 function parseMarkers(text, markers) {
   const result = {};
   const pattern = new RegExp(
     `### (${markers.join('|')})\\s*\\n([\\s\\S]*?)(?=\\n### (?:${markers.join('|')})\\s*\\n|$)`,
-    'g'
+    'gi'
   );
   let m;
   while ((m = pattern.exec(text)) !== null) {
-    result[m[1]] = m[2].trim();
+    // BUILD 17 fix, applied proactively — same latent bug confirmed in
+    // meeting-analysis-background.js: a case-sensitive regex silently
+    // drops any section whose header casing drifts even slightly from
+    // exactly what was requested (e.g. AI writes "### Summary" instead
+    // of "### SUMMARY"), with no error anywhere — the section just
+    // never appears. Normalizing to uppercase closes this regardless of
+    // which section it might eventually hit here too.
+    result[m[1].toUpperCase()] = m[2].trim();
   }
   return result;
 }
@@ -103,17 +156,17 @@ Produce three sections for a presales prep report. Respond with EXACTLY these ma
   }
 }
 
-async function generateStrategy(prospect, confirmed_facts) {
+async function generateStrategy(prospect, confirmed_facts, methodologyContext) {
   try {
     const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
 
 ---
 
-Using the LMI sales context above, produce the Recommended Sales Strategy section of a presales prep report — the PBM hypotheses, opening/probing questions, and recommended approach for this specific meeting. Apply the LMI sales context heavily. Write genuine narrative analysis, not just a list of category labels.
+Using the sales context above, produce the Recommended Sales Strategy section of a presales prep report — the buying-motive hypotheses, opening/probing questions, and recommended approach for this specific meeting. Apply the sales context heavily. Write genuine narrative analysis, not just a list of category labels.
 
 Structure this with sub-headings using #### (four hashes), each on its own line, followed by a blank line, then the paragraph — e.g.:
 
-#### EDM and Success-Bar Calibration
+#### Key Considerations for This Meeting
 
 Paragraph text here...
 
@@ -124,7 +177,7 @@ Respond with EXACTLY this top-level header, nothing before it or after the conte
 ### STRATEGY`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 2200
     });
@@ -134,13 +187,13 @@ Respond with EXACTLY this top-level header, nothing before it or after the conte
   }
 }
 
-async function generateDigest(prospect, confirmed_facts) {
+async function generateDigest(prospect, confirmed_facts, methodologyContext) {
   try {
     const prompt = `${buildProspectBlock(prospect, confirmed_facts)}
 
 ---
 
-Using the LMI sales context above, produce three condensed sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
+Using the sales context above, produce three condensed sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
 
 ### SUMMARY
 (a condensed version of the recommended approach for this meeting — a few short paragraphs, readable in about two minutes right before walking in)
@@ -152,7 +205,7 @@ Using the LMI sales context above, produce three condensed sections for a presal
 (a neutral reflection space for genuine ambiguity, a tentative hunch, or anything that doesn't cleanly fit elsewhere. This may be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1500
     });
@@ -172,7 +225,7 @@ function isHrRole(position) {
   return hrKeywords.test(position);
 }
 
-async function generateSpin(prospect, confirmed_facts) {
+async function generateSpin(prospect, confirmed_facts, methodologyContext) {
   try {
     const hrContact = isHrRole(prospect.position);
     const hrCaution = hrContact
@@ -183,7 +236,7 @@ async function generateSpin(prospect, confirmed_facts) {
 
 ---
 
-This section is a deliberate departure from narrative LMI-method reasoning into a straightforward, literal question bank the salesperson can bring into the meeting — specific, tailored questions for THIS company and contact, not generic textbook examples.
+This section is a deliberate departure from narrative reasoning into a straightforward, literal question bank the salesperson can bring into the meeting — specific, tailored questions for THIS company and contact, not generic textbook examples.
 
 Produce five sections, each a short bulleted list of 3-5 specific questions, following the standard SPIN structure. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
 
@@ -203,7 +256,7 @@ Produce five sections, each a short bulleted list of 3-5 specific questions, fol
 (questions that move toward next steps — gauge interest, timeline, who else needs to be involved)`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1400
     });
@@ -245,10 +298,18 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    if (LMI_CONTEXT_LOAD_ERROR) {
+    // BUILD 30: LMI/Non-LMI segmentation — pick the methodology context
+    // based on this specific member's segment, not a fixed module-level
+    // constant, since different requests can come from different segments.
+    const isNonLmi = member.user_segment === 'non_lmi';
+    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
+    const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
-        error_message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR
+        error_message: `${METHODOLOGY_LABEL} failed to load: ` + METHODOLOGY_LOAD_ERROR
       });
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
@@ -257,9 +318,9 @@ exports.handler = async function (event) {
     // need. Still run in parallel for speed, just without the pressure.
     const [factsResult, strategyResult, digestResult, spinResult] = await Promise.allSettled([
       generateFacts(prospect, confirmed_facts),
-      generateStrategy(prospect, confirmed_facts),
-      generateDigest(prospect, confirmed_facts),
-      generateSpin(prospect, confirmed_facts)
+      generateStrategy(prospect, confirmed_facts, METHODOLOGY_CONTEXT),
+      generateDigest(prospect, confirmed_facts, METHODOLOGY_CONTEXT),
+      generateSpin(prospect, confirmed_facts, METHODOLOGY_CONTEXT)
     ]);
 
     const results = [factsResult, strategyResult, digestResult, spinResult].map((r) =>
