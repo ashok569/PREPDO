@@ -1,4 +1,30 @@
 // PREPDO — meeting-analysis-background.js
+// BUILD 31 | 2026-08-12
+// Closed a real leak-risk found while reviewing: buildMeetingBlock()
+// describes the raw structured-form data BACK to the AI in the user
+// prompt itself — even with the correct system context loaded, seeing
+// "RRR"/"PBM" terminology in the INPUT data risked the model mirroring
+// that vocabulary in its own output regardless of instructions. Now
+// segment-aware (isNonLmi passed through from the handler to all 4
+// generate* functions and into buildMeetingBlock itself). Underlying
+// JSON field names (meeting.pbm, meeting.rrr_established, etc.) stay
+// identical either way — only how they're DESCRIBED in the prompt
+// changes. Verified with a standalone test producing genuinely
+// distinct output for both segments before shipping.
+//
+// BUILD 27 | 2026-08-12
+// LMI/Non-LMI segmentation. Now loads BOTH lmi-context.md and the new
+// spin-context.md independently, and picks per-request based on the
+// requesting member's user_segment (migration_v7.sql). Real gap found
+// and fixed here specifically: generateDetailed's prompt had LMI stage
+// names (PBM, Needs=Motives, RRR) hardcoded directly into the prompt
+// TEXT, not just relying on the system context — swapping only the
+// context file would NOT have been enough on its own; a non-LMI user
+// would still have been explicitly asked to reason in LMI terms. Added
+// stageListForSegment() so the prompt itself asks for the right stage
+// vocabulary per segment. Every other prompt's "the LMI sales context"
+// changed to segment-neutral "the sales context".
+//
 // BUILD 26 | 2026-08-11
 // Small real bug found reviewing an actual Role Play report (same
 // bullet-parsing pattern used there): a standalone "---" line in the
@@ -87,6 +113,26 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
+// BUILD 27: LMI/Non-LMI segmentation — see presales-generate-
+// background.js for the full rationale, identical pattern here.
+const SPIN_CANDIDATE_PATHS = [
+  path.join(__dirname, 'spin-context.md'),
+  path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
+  path.join(process.cwd(), 'netlify', 'functions', 'spin-context.md'),
+  '/var/task/spin-context.md',
+  '/var/task/netlify/functions/spin-context.md'
+];
+
+let SPIN_CONTEXT;
+let SPIN_CONTEXT_LOAD_ERROR = null;
+try {
+  const foundPath = SPIN_CANDIDATE_PATHS.find((p) => fs.existsSync(p));
+  if (!foundPath) throw new Error(`Not found in any of: ${SPIN_CANDIDATE_PATHS.join(', ')}`);
+  SPIN_CONTEXT = fs.readFileSync(foundPath, 'utf8');
+} catch (err) {
+  SPIN_CONTEXT_LOAD_ERROR = err.message;
+}
+
 function parseMarkers(text, markers) {
   const result = {};
   const pattern = new RegExp(
@@ -120,7 +166,7 @@ function extractLeadingNumber(text, label) {
   return { number: parseFloat(match[1]), rest: text.replace(re, '').trim() };
 }
 
-function buildMeetingBlock(prospect, meeting) {
+function buildMeetingBlock(prospect, meeting, isNonLmi) {
   const parts = [`PROSPECT DETAILS
 Company: ${prospect.company_name}
 Contact: ${prospect.prospect_name || '(not provided)'}, role: ${prospect.position || '(unknown)'}
@@ -147,12 +193,23 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
       });
     }
 
+    // BUILD 31 fix: this describes raw form data BACK to the AI in the
+    // prompt itself — even with the correct system context loaded,
+    // seeing "RRR"/"PBM" terminology in the INPUT data risked the model
+    // mirroring that vocabulary in its own output regardless of
+    // instructions. The underlying JSON field names (meeting.pbm,
+    // meeting.rrr_established, etc.) stay the same either way — only
+    // how they're DESCRIBED here changes.
     const pbmAll = [...(meeting.pbm || []), ...(meeting.pbm_specific || [])];
-    if (pbmAll.length) s.push(`PBM: ${pbmAll.join('; ')}`);
+    if (pbmAll.length) s.push(`${isNonLmi ? 'Top Buying Motive' : 'PBM'}: ${pbmAll.join('; ')}`);
     if (meeting.quantified_opportunity) s.push(`Quantified Opportunity: ${meeting.quantified_opportunity}`);
     s.push(`Urgency Built: ${meeting.urgency || '(not recorded)'}`);
     s.push(`Sales Expectation Format Discussed: ${meeting.sales_expectation_format || '(not recorded)'}`);
-    s.push(`RRR Established: ${meeting.rrr_established || 'no'} | RRR Verbalised by Prospect (not just asserted by salesperson): ${meeting.rrr_verbalised || 'no'} | RRR Notes: ${meeting.rrr_amount_notes || '(none)'}`);
+    if (isNonLmi) {
+      s.push(`Need-Payoff Established: ${meeting.rrr_established || 'no'} | Need-Payoff Value Verbalized by Prospect (not just asserted by salesperson): ${meeting.rrr_verbalised || 'no'} | Need-Payoff Notes: ${meeting.rrr_amount_notes || '(none)'}`);
+    } else {
+      s.push(`RRR Established: ${meeting.rrr_established || 'no'} | RRR Verbalised by Prospect (not just asserted by salesperson): ${meeting.rrr_verbalised || 'no'} | RRR Notes: ${meeting.rrr_amount_notes || '(none)'}`);
+    }
 
     if (meeting.stalls_objections && meeting.stalls_objections.length) {
       s.push('Stalls/Objections:');
@@ -175,7 +232,7 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
     const srParts = [];
     if (sr.what_went_well) srParts.push(`What went well: ${sr.what_went_well}`);
     if (sr.what_could_improve) srParts.push(`What could improve: ${sr.what_could_improve}`);
-    if (sr.sales_cycle_adherence_percent) srParts.push(`Self-rated sales cycle adherence: ${sr.sales_cycle_adherence_percent}%`);
+    if (sr.sales_cycle_adherence_percent) srParts.push(`Self-rated adherence to ${isNonLmi ? 'the set sales meeting process' : 'the sales cycle'}: ${sr.sales_cycle_adherence_percent}%`);
     if (sr.learnings) srParts.push(`Learnings: ${sr.learnings}`);
     if (srParts.length) parts.push(`SALESPERSON'S OWN REFLECTION (their subjective view — weigh against, don't just repeat, in your own analysis):\n${srParts.join('\n')}`);
   }
@@ -183,19 +240,29 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
   return parts.join('\n\n');
 }
 
-async function generateDetailed(prospect, meeting) {
+// The stage list itself was hardcoded with LMI terms directly in the
+// prompt text (PBM/Needs=Motives/RRR) — swapping only the system
+// context wouldn't have been enough, a non-LMI user would still have
+// been asked to reason in LMI-specific terms. Segment-aware helper.
+function stageListForSegment(isNonLmi) {
+  return isNonLmi
+    ? 'Situation, Problem, Implication, Need-Payoff, Objections/Stalls handling, Closing'
+    : 'Rapport/Credibility/Trust, Probing, PBM, Needs=Motives, RRR, Urgency, Stalls&Objections, Closing, Referrals';
+}
+
+async function generateDetailed(prospect, meeting, methodologyContext, isNonLmi) {
   try {
-    const prompt = `${buildMeetingBlock(prospect, meeting)}
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
 
 ---
 
-Using the LMI sales context above, analyze this meeting. Respond with EXACTLY this markdown section header, nothing before it or after the content:
+Using the sales context above, analyze this meeting. Respond with EXACTLY this markdown section header, nothing before it or after the content:
 
 ### DETAILED
-(genuine narrative analysis of how the meeting actually went, stage by stage through the Sales Cycle — Rapport/Credibility/Trust, Probing, PBM, Needs=Motives, RRR, Urgency, Stalls&Objections, Closing, Referrals. Note explicitly where the salesperson followed the cycle well and where they diverged. When assessing talk-ratio, remember the first 5-10 minutes (R-C-T opening) is intentionally salesperson-heavy — only judge the 20/80 ratio for what happens AFTER the permission-to-probe transition.)`;
+(genuine narrative analysis of how the meeting actually went, stage by stage through: ${stageListForSegment(isNonLmi)}. Note explicitly where the salesperson followed good technique and where they diverged. When assessing talk-ratio, remember the first 5-10 minutes (the opening/rapport phase) is intentionally salesperson-heavy — only judge the 20/80 ratio for what happens AFTER the shift into real probing.)`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 3500
     });
@@ -206,13 +273,13 @@ Using the LMI sales context above, analyze this meeting. Respond with EXACTLY th
   }
 }
 
-async function generateSummaryScore(prospect, meeting) {
+async function generateSummaryScore(prospect, meeting, methodologyContext, isNonLmi) {
   try {
-    const prompt = `${buildMeetingBlock(prospect, meeting)}
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
 
 ---
 
-Using the LMI sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
 
 ### SUMMARY
 (condensed version, a few short paragraphs, readable in two minutes)
@@ -222,7 +289,7 @@ The FIRST line must be exactly: SCORE: X (a number 0-10, one decimal place allow
 Then a blank line, then 2-3 sentences of reasoning grounded in specific, named criteria from the meeting — never an impressionistic number.`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1000
     });
@@ -233,23 +300,23 @@ Then a blank line, then 2-3 sentences of reasoning grounded in specific, named c
   }
 }
 
-async function generateScoring(prospect, meeting) {
+async function generateScoring(prospect, meeting, methodologyContext, isNonLmi) {
   try {
-    const prompt = `${buildMeetingBlock(prospect, meeting)}
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
 
 ---
 
-Using the LMI Probability-of-Close framework from the context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the Probability-of-Close reasoning framework from the sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
 
 ### PROBABILITY_OF_CLOSE
 The FIRST line must be exactly: PROBABILITY: X (a whole number percentage, e.g. PROBABILITY: 45)
-Then a blank line, then reasoning that explicitly addresses: was Need-Payoff reached AND verbalised by the prospect themselves (not just asserted by the salesperson)? Where does this sit in the four-stage concern sequence (problem-solution match -> price -> risk -> ask to buy)? Were buying signals ordinary or "big"? Is the quantified value coming from someone with real authority (MD/Business Head), or only from an HR-level conversation? Ground the percentage in these specific, named criteria — never an impressionistic number.
+Then a blank line, then reasoning that explicitly addresses: was Need-Payoff reached AND verbalised by the prospect themselves (not just asserted by the salesperson)? Where does this sit in the natural progression toward a decision? Were buying signals ordinary or "big"? Is the quantified value coming from someone with real authority to act on it, or only from someone who owns the pain but not the budget? Ground the percentage in these specific, named criteria — never an impressionistic number.
 
 ### RECOMMENDED_ACTIONS
 A bulleted list of specific, concrete next actions for the salesperson — tied to what actually happened in this specific meeting, not generic sales advice.`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1800
     });
@@ -260,13 +327,13 @@ A bulleted list of specific, concrete next actions for the salesperson — tied 
   }
 }
 
-async function generateGaps(prospect, meeting) {
+async function generateGaps(prospect, meeting, methodologyContext, isNonLmi) {
   try {
-    const prompt = `${buildMeetingBlock(prospect, meeting)}
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
 
 ---
 
-Using the LMI sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the sales context above, analyze this meeting. Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
 
 ### MISSED_ITEMS
 (problem statements or challenges the prospect raised but the salesperson never actually probed further — use the "what else?" principle: what should have been explored but wasn't. Be specific about what was said and what the follow-up should have been. If genuinely nothing was missed, say so plainly rather than manufacturing a gap.)
@@ -278,7 +345,7 @@ Using the LMI sales context above, analyze this meeting. Respond with EXACTLY th
 (a neutral reflection space for genuine ambiguity or a tentative hunch. May be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: LMI_CONTEXT,
+      system: methodologyContext,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1600
     });
@@ -313,19 +380,26 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    if (LMI_CONTEXT_LOAD_ERROR) {
+    // BUILD 27: LMI/Non-LMI segmentation — see presales-generate-
+    // background.js for the full rationale, identical pattern here.
+    const isNonLmi = member.user_segment === 'non_lmi';
+    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
+    const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
-        error_message: 'lmi-context.md failed to load: ' + LMI_CONTEXT_LOAD_ERROR
+        error_message: `${METHODOLOGY_LABEL} failed to load: ` + METHODOLOGY_LOAD_ERROR
       });
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
     const [detailedResult, summaryScoreResult, scoringResult, gapsResult] = await Promise.allSettled([
-      generateDetailed(prospect, meeting),
-      generateSummaryScore(prospect, meeting),
-      generateScoring(prospect, meeting),
-      generateGaps(prospect, meeting)
+      generateDetailed(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateSummaryScore(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateScoring(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateGaps(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
     ]);
 
     const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult].map((r) =>
