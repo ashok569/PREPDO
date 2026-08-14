@@ -1,5 +1,5 @@
 // PREPDO — roleplay-debrief-background.js
-// BUILD 40 | 2026-08-14
+// BUILD 40 | 2026-08-14 
 // Reconstructed from conversation record after a sandbox reset (exact
 // Build 30 text was pasted in full earlier and used as ground truth
 // here), with the industry-context library wired in — same pattern as
