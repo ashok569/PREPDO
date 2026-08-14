@@ -1,4 +1,29 @@
 // PREPDO — presales-generate-background.js
+// BUILD 40 | 2026-08-14
+// Reconstructed from conversation record after a sandbox reset —
+// combines the exact Build 18 base text (pasted in full earlier) with
+// the Build 19 perspective-shift edits (made via targeted str_replace
+// operations, reconstructed here from those exact old/new pairs) and
+// the new industry-context library wiring on top. Reconstruction
+// verified via syntax check + a standalone logic test of the
+// perspective-shift combine function before being called complete.
+//
+// BUILD 19 | 2026-08-13
+// Perspective-shift feature: when a rerun reveals the real decision-
+// maker is someone different from the prospect's original contact
+// (e.g. EDM turns out to be the MD, not the HR contact first met),
+// new_contact ({name, role}) triggers this. Fetches the previous
+// complete Presales Prep report SERVER-SIDE (never trusts client-
+// supplied "previous content"), generates fresh content using the new
+// contact as primary perspective, then combines old+new per field —
+// old content first, new content appended below with a clear marker,
+// NEVER overwritten. Verified with a standalone test covering all
+// three real scenarios (normal generation, shift with a prior report
+// found, shift with no prior report found as a graceful fallback)
+// before shipping. Points to Ponder deliberately excluded from the
+// append pattern — concatenating old+new ponder notes would read as
+// unattributed noise, not useful signal; always just the fresh one.
+//
 // BUILD 18 | 2026-08-12
 // LMI/Non-LMI segmentation. Now loads BOTH lmi-context.md and the new
 // spin-context.md independently at module level, and picks which one
@@ -10,51 +35,35 @@
 // "the sales context" (segment-neutral phrasing), and the Strategy
 // prompt's illustrative example header was changed from the LMI-
 // specific "EDM and Success-Bar Calibration" to a generic
-// "Key Considerations for This Meeting" — it's only there to
-// demonstrate the #### formatting rule, the content was never load-
-// bearing, so no reason for it to carry LMI branding either way.
+// "Key Considerations for This Meeting".
 //
 // BUILD 17 | 2026-08-11
-// Proactive fix — same bug confirmed and fixed in meeting-analysis-
-// background.js: parseMarkers()'s regex was case-SENSITIVE, so a
-// section whose AI-generated header casing drifted even slightly from
-// exactly what was requested (e.g. "### Summary" instead of
-// "### SUMMARY") would silently vanish with no error anywhere. Not
-// yet reported as a symptom here, but it's the identical pattern, so
-// fixed before it causes the same silent content loss. Now
-// case-insensitive, with captured keys normalized to uppercase.
+// parseMarkers()'s regex made case-insensitive, captured keys
+// normalized to uppercase — same fix as meeting-analysis-background.js
+// Build 25, applied proactively here since it's the identical pattern.
 //
 // BUILD 16 | 2026-08-10
 // Real bug fix: if the session-auth check inside this function ever
 // failed, it returned immediately WITHOUT ever updating the report row
-// — leaving it stuck at 'pending' forever with zero explanation, even
-// though report_id was fully known at that point. Now marks the report
-// 'failed' with a clear reason before returning. Also see _lib.js
-// BUILD 16 — the underlying Anthropic API calls now have a 90s timeout,
-// closing a related gap where a hung call had nothing to catch it once
-// generation moved off the old 30s-limited synchronous path.
+// — leaving it stuck at 'pending' forever with zero explanation. Now
+// marks the report 'failed' with a clear reason before returning.
 //
-// Added a 4th parallel call: SPIN Questions (Situational/Problem/
-// Implication/Need-Payoff/Closing), a literal question bank rather than
-// narrative analysis — deliberately a departure from pure LMI-method
-// reasoning. Includes a conditional instruction for HR-type contacts
-// (detected from position/role keywords): Need-Payoff questions steer
-// away from forcing a revenue framing that often doesn't fit what HR
-// actually owns, toward succession planning / high-potential
-// development / capacity building / training ROI / leadership
+// 4th parallel call: SPIN Questions (Situational/Problem/Implication/
+// Need-Payoff/Closing), a literal question bank. Includes a
+// conditional instruction for HR-type contacts (detected from
+// position/role keywords): Need-Payoff questions steer away from
+// forcing a revenue framing that often doesn't fit what HR actually
+// owns, toward succession planning / capacity building / leadership
 // effectiveness / productivity instead.
 //
-// This does the actual AI work — same 3-parallel-call approach as the
-// old presales-generate.js (facts / strategy / digest), but now with
-// no deadline pressure at all. Triggered by presales-generate-start.js,
-// which already created the 'pending' report row this function updates
-// when done. Nothing is returned to an HTTP caller in any meaningful
-// way — the frontend finds out this function finished by polling
-// check-report-status.js, not by waiting on this function's response.
+// Triggered by presales-generate-start.js, which already created the
+// 'pending' report row this function updates when done. Nothing is
+// returned to an HTTP caller in any meaningful way — the frontend
+// finds out this function finished by polling check-report-status.js.
 
 const fs = require('fs');
 const path = require('path');
-const { callClaude, extractText, supaPatch, getMemberFromSession } = require('./_lib.js');
+const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession } = require('./_lib.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -74,9 +83,6 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
-// BUILD 30: LMI/Non-LMI segmentation. Non-LMI users get spin-context.md
-// instead — same file-finding pattern, loaded independently so one
-// missing file doesn't block the segment that doesn't need it.
 const SPIN_CANDIDATE_PATHS = [
   path.join(__dirname, 'spin-context.md'),
   path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
@@ -103,24 +109,21 @@ function parseMarkers(text, markers) {
   );
   let m;
   while ((m = pattern.exec(text)) !== null) {
-    // BUILD 17 fix, applied proactively — same latent bug confirmed in
-    // meeting-analysis-background.js: a case-sensitive regex silently
-    // drops any section whose header casing drifts even slightly from
-    // exactly what was requested (e.g. AI writes "### Summary" instead
-    // of "### SUMMARY"), with no error anywhere — the section just
-    // never appears. Normalizing to uppercase closes this regardless of
-    // which section it might eventually hit here too.
     result[m[1].toUpperCase()] = m[2].trim();
   }
   return result;
 }
 
 function buildProspectBlock(prospect, confirmed_facts) {
+  const secondContact = prospect.prospect_name_2
+    ? `\nSecond Contact: ${prospect.prospect_name_2}, role: ${prospect.position_2 || '(unknown)'}${prospect.linkedin_url_2 ? ', LinkedIn: ' + prospect.linkedin_url_2 : ''} (also involved in this account — consider both contacts' likely perspectives and priorities where relevant, not just the primary one)`
+    : '';
   return `PROSPECT DETAILS
 Company: ${prospect.company_name}
 Website: ${prospect.company_website || '(not provided)'}
 Contact: ${prospect.prospect_name || '(not provided)'}, role: ${prospect.position || '(unknown)'}
-LinkedIn: ${prospect.linkedin_url || '(not provided)'}
+LinkedIn: ${prospect.linkedin_url || '(not provided)'}${secondContact}
+Referred by: ${prospect.referred_by || '(not specified)'}
 Meeting objective: ${prospect.meeting_objective || '(not specified)'}
 Notes: ${prospect.notes || '(none)'} (if this mentions a referral source, introduction, or how the meeting was arranged, treat that as important context and reflect it in Strategy/Assumptions — e.g. a warm introduction changes how Rapport/Credibility can be opened)
 
@@ -215,10 +218,6 @@ Using the sales context above, produce three condensed sections for a presales p
   }
 }
 
-// Rough keyword check for whether the contact sits in an HR/People
-// function rather than a business-operations role — used to steer
-// Need-Payoff questions away from forcing a revenue framing that often
-// doesn't fit what HR actually owns.
 function isHrRole(position) {
   if (!position) return false;
   const hrKeywords = /\b(HR|human resources?|people( ops| team| function)?|talent|L\s?&\s?D|learning\s*&?\s*development|CHRO|CPO|chief people)\b/i;
@@ -274,23 +273,15 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: 'Invalid request.' };
   }
 
-  const { report_id, prospect, confirmed_facts, session_token } = payload;
+  const { report_id, prospect, confirmed_facts, new_contact, session_token } = payload;
 
   if (!report_id || !prospect || !confirmed_facts) {
     return { statusCode: 400, body: 'report_id, prospect, and confirmed_facts are required.' };
   }
 
   try {
-    // This function has no HTTP-facing auth otherwise (it's only meant
-    // to be triggered by presales-generate-start.js, never called
-    // directly by the browser) — still worth checking the session is a
-    // real one, since the URL is technically guessable, and this
-    // function spends real API cost per invocation.
     const member = await getMemberFromSession(session_token);
     if (!member) {
-      // BUILD 16 FIX: this used to return here without ever updating
-      // the report row — leaving it stuck at 'pending' forever with no
-      // explanation, since report_id is fully known at this point.
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
         error_message: 'Session check failed inside the background worker (not logged in, or session expired between starting and running the job).'
@@ -298,13 +289,27 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    // BUILD 30: LMI/Non-LMI segmentation — pick the methodology context
-    // based on this specific member's segment, not a fixed module-level
-    // constant, since different requests can come from different segments.
     const isNonLmi = member.user_segment === 'non_lmi';
-    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    let METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
     const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
     const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    // BUILD 40: pre-built industry context library — see
+    // meeting-analysis-background.js for the full rationale, identical
+    // pattern here.
+    if (isNonLmi && member.industry_context_id) {
+      try {
+        const industryRows = await supaGet(`industry_contexts?id=eq.${member.industry_context_id}&select=industry_name,context_content`);
+        if (industryRows.length) {
+          METHODOLOGY_CONTEXT += `\n\n---\n\n## Industry Context: ${industryRows[0].industry_name}\n${industryRows[0].context_content}`;
+        }
+      } catch (e) {
+        // A failed lookup shouldn't block the whole report.
+      }
+    }
+    if (isNonLmi && member.org_context_research) {
+      METHODOLOGY_CONTEXT += `\n\n---\n\n## The Salesperson's Own Company (for your grounding — this is who THEY work for, not the prospect)\nCompany: ${member.selling_company_name || '(not specified)'}\n${member.org_context_research}`;
+    }
 
     if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
@@ -314,13 +319,35 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
+    // BUILD 19: perspective-shift — when a rerun reveals the real
+    // decision-maker is someone different from the prospect's original
+    // contact, new_contact is set. Fetch the previous report SERVER-
+    // SIDE (never trusting client-supplied "previous content"), and
+    // generate fresh content using the new contact as primary
+    // perspective. Combined with the old content AFTER generation.
+    let previousReport = null;
+    let generationProspect = prospect;
+    if (new_contact && new_contact.name) {
+      try {
+        const priorRows = await supaGet(
+          `reports?prospect_id=eq.${prospect.id}&report_type=eq.presales_prep&status=eq.complete&select=*&order=created_at.desc&limit=1`
+        );
+        if (priorRows.length) previousReport = priorRows[0];
+      } catch (e) {
+        // If the lookup fails, proceed as a normal generation rather
+        // than blocking the whole report over a missing "previous
+        // report to append to."
+      }
+      generationProspect = { ...prospect, prospect_name: new_contact.name, position: new_contact.role || prospect.position };
+    }
+
     // No 30s ceiling here — these can take as long as they genuinely
     // need. Still run in parallel for speed, just without the pressure.
     const [factsResult, strategyResult, digestResult, spinResult] = await Promise.allSettled([
-      generateFacts(prospect, confirmed_facts),
-      generateStrategy(prospect, confirmed_facts, METHODOLOGY_CONTEXT),
-      generateDigest(prospect, confirmed_facts, METHODOLOGY_CONTEXT),
-      generateSpin(prospect, confirmed_facts, METHODOLOGY_CONTEXT)
+      generateFacts(generationProspect, confirmed_facts),
+      generateStrategy(generationProspect, confirmed_facts, METHODOLOGY_CONTEXT),
+      generateDigest(generationProspect, confirmed_facts, METHODOLOGY_CONTEXT),
+      generateSpin(generationProspect, confirmed_facts, METHODOLOGY_CONTEXT)
     ]);
 
     const results = [factsResult, strategyResult, digestResult, spinResult].map((r) =>
@@ -367,12 +394,33 @@ exports.handler = async function (event) {
       '', '### Closing Questions', allSections.CLOSING_QUESTIONS || '(not generated)'
     ].join('\n') : '';
 
+    // BUILD 19: perspective-shift combine — old content first, new
+    // content appended below with a clear marker, never overwritten.
+    // Applied independently to each field, so a field the new
+    // generation didn't touch (e.g. SPIN, if that call failed) still
+    // shows the old content rather than going blank.
+    function appendPerspective(oldContent, newContent) {
+      if (!previousReport) return newContent; // no perspective shift — normal generation, unchanged
+      const marker = `\n\n---\n\n## Updated Perspective — Meeting with ${new_contact.name}${new_contact.role ? ', ' + new_contact.role : ''} (Generated ${new Date().toLocaleDateString()})\n\n`;
+      return (oldContent || '(no prior content)') + marker + newContent;
+    }
+
+    const finalDetailed = appendPerspective(previousReport?.ai_output_detailed, detailed);
+    const finalSummary = appendPerspective(previousReport?.ai_output_summary, allSections.SUMMARY || '');
+    const finalExtra = appendPerspective(previousReport?.ai_output_extra, allSections.KEY_THINGS || '');
+    const finalSpin = appendPerspective(previousReport?.ai_output_spin, spin);
+    // Points to Ponder deliberately NOT appended the same way — each
+    // generation's ponder note is about THAT specific analysis, and
+    // concatenating old+new ponder notes would read as confusing,
+    // unattributed noise rather than useful signal. Always just the
+    // fresh one.
+
     await supaPatch(`reports?id=eq.${report_id}`, {
-      ai_output_detailed: detailed,
-      ai_output_summary: allSections.SUMMARY || '',
-      ai_output_extra: allSections.KEY_THINGS || '',
+      ai_output_detailed: finalDetailed,
+      ai_output_summary: finalSummary,
+      ai_output_extra: finalExtra,
       ai_output_ponder: ponder,
-      ai_output_spin: spin,
+      ai_output_spin: finalSpin,
       status: 'complete'
     });
 
@@ -385,8 +433,7 @@ exports.handler = async function (event) {
       });
     } catch (e2) {
       // If even the failure-update fails, there's nothing more we can
-      // do from here — the frontend's polling will eventually time out
-      // its own wait and show a generic "still processing" message.
+      // do from here.
     }
     return { statusCode: 200, body: 'done (failed - exception)' };
   }
