@@ -1,5 +1,5 @@
 // PREPDO — settings.js
-// BUILD 39 | 2026-08-14
+// BUILD 42 | 2026-08-14
 // Added the pre-built industry context library (migration_v12.sql/
 // migration_v13.sql). Three new actions:
 //   'list-industries' — names only, for the dropdown, open to any
