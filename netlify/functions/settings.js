@@ -97,6 +97,24 @@ exports.handler = async function (event) {
       return respond(200, { ok: true });
     }
 
+    if (action === 'get-industry-preview') {
+      // Deliberately NOT admin-gated, unlike admin-get-industry-content
+      // below — a regular Non-LMI user previewing an industry's content
+      // before selecting it isn't a sensitive operation (the AI already
+      // uses this exact content when generating their reports, so
+      // there's no real confidentiality reason to hide it from them).
+      // Only EDITING shared content stays admin-only.
+      const { industry_context_id } = payload;
+      if (!industry_context_id) {
+        return respond(400, { ok: false, message: 'industry_context_id is required.' });
+      }
+      const rows = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=context_content`);
+      if (!rows.length) {
+        return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      return respond(200, { ok: true, context_content: rows[0].context_content });
+    }
+
     if (action === 'admin-get-industry-content') {
       if (member.key_type !== 'admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
