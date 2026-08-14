@@ -1,4 +1,12 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 40 | 2026-08-14
+// Reconstructed from conversation record after a sandbox reset (exact
+// Build 30 text was pasted in full earlier and used as ground truth
+// here), with the industry-context library wired in — same pattern as
+// meeting-analysis-background.js Build 40: if a Non-LMI user has
+// selected a pre-built industry, that content layers in before any
+// company-specific org_context_research.
+//
 // BUILD 30 | 2026-08-12
 // LMI/Non-LMI segmentation. Same fix as meeting-analysis-background.js
 // Build 27: the DETAILED prompt's stage list was hardcoded with LMI
@@ -13,9 +21,8 @@
 // report: Next Practice showed a stray, meaningless "--" bullet at the
 // end of the list — caused by a standalone "---" divider line in the
 // AI's output only having its first dash stripped by the old regex.
-// Same fix applied to meeting-analysis-background.js, which has the
-// identical pattern. Now strips all leading dashes/asterisks and drops
-// any resulting line with no real letters or digits.
+// Now strips all leading dashes/asterisks and drops any resulting
+// line with no real letters or digits.
 //
 // BUILD 27 | 2026-08-11
 // New file. THE FILENAME SUFFIX "-background" IS REQUIRED — same rule
@@ -60,8 +67,6 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
-// BUILD 30: LMI/Non-LMI segmentation — see presales-generate-
-// background.js for the full rationale, identical pattern here.
 const SPIN_CANDIDATE_PATHS = [
   path.join(__dirname, 'spin-context.md'),
   path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
@@ -80,10 +85,6 @@ try {
   SPIN_CONTEXT_LOAD_ERROR = err.message;
 }
 
-// Same fix as meeting-analysis-background.js: the stage list was
-// hardcoded with LMI terms directly in the prompt TEXT, not just the
-// system context — swapping only the context file would not have been
-// enough on its own.
 function stageListForSegment(isNonLmi) {
   return isNonLmi
     ? 'Situation, Problem, Implication, Need-Payoff, handling any objections that came up, closing/next-step'
@@ -140,12 +141,27 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    // BUILD 30: LMI/Non-LMI segmentation — see presales-generate-
-    // background.js for the full rationale, identical pattern here.
     const isNonLmi = member.user_segment === 'non_lmi';
-    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    let METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
     const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
     const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    // BUILD 40: pre-built industry context library — see
+    // meeting-analysis-background.js for the full rationale, identical
+    // pattern here.
+    if (isNonLmi && member.industry_context_id) {
+      try {
+        const industryRows = await supaGet(`industry_contexts?id=eq.${member.industry_context_id}&select=industry_name,context_content`);
+        if (industryRows.length) {
+          METHODOLOGY_CONTEXT += `\n\n---\n\n## Industry Context: ${industryRows[0].industry_name}\n${industryRows[0].context_content}`;
+        }
+      } catch (e) {
+        // A failed lookup shouldn't block the whole debrief.
+      }
+    }
+    if (isNonLmi && member.org_context_research) {
+      METHODOLOGY_CONTEXT += `\n\n---\n\n## The Salesperson's Own Company (for your grounding — this is who THEY work for, not the prospect)\nCompany: ${member.selling_company_name || '(not specified)'}\n${member.org_context_research}`;
+    }
 
     if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
@@ -204,9 +220,6 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
 
     const nextPracticeText = sections.NEXT_PRACTICE || '';
     const nextPracticeArray = nextPracticeText.split('\n')
-      // Same fix as meeting-analysis-background.js: a standalone "---"
-      // divider line only had its first dash stripped, leaving a stray
-      // "--" bullet with no content. Confirmed via a real report.
       .map((l) => l.replace(/^[-*]+\s*/, '').trim())
       .filter((l) => l.length > 0 && /[a-zA-Z0-9]/.test(l));
 
