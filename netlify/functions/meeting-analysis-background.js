@@ -1,4 +1,15 @@
 // PREPDO — meeting-analysis-background.js
+// BUILD 40 | 2026-08-14
+// Reconstructed from conversation record after a sandbox reset (the
+// exact Build 31 text was pasted in full earlier and used as ground
+// truth here), with the industry-context library wired in on top —
+// see the isNonLmi block in the handler below. If a Non-LMI user has
+// selected a pre-built industry (migration_v12.sql/v13.sql), that
+// content layers in alongside/instead of their own company-specific
+// org_context_research — industry-level context first, company
+// specifics after, same "layer, don't replace" pattern already used
+// for org_context_research itself.
+//
 // BUILD 31 | 2026-08-12
 // Closed a real leak-risk found while reviewing: buildMeetingBlock()
 // describes the raw structured-form data BACK to the AI in the user
@@ -38,36 +49,20 @@
 // failure note anywhere — confirmed root cause: parseMarkers()'s regex
 // was case-SENSITIVE, so when the AI wrote "### Summary" instead of
 // the exact "### SUMMARY" requested, it simply never matched — no
-// exception, the section just silently vanished. OVERALL_SCORE
-// survived in the same response because its format instruction is far
-// more rigid than Summary's looser one, so the AI was less likely to
-// drift on it. Now case-insensitive, with captured keys normalized to
-// uppercase for reliable lookup regardless of actual AI casing.
-// Reproduced and verified fixed against the exact failure before
-// shipping. Same fix applied proactively to presales-generate-
-// background.js too, since it shares the identical pattern.
+// exception, the section just silently vanished. Now case-insensitive,
+// with captured keys normalized to uppercase.
 //
 // BUILD 24 | 2026-08-11
 // Removed the "The above might matter, might not matter — you judge"
-// caveat line from Points to Ponder — not needed here (kept as-is in
-// Presales Prep's version, only removed for Meeting Analysis).
+// caveat line from Points to Ponder for Meeting Analysis specifically.
 //
 // BUILD 22 | 2026-08-10
-// Real bug fix from reviewing the first successful real report: Summary
-// and Overall Score both came back "(not generated)" — the "core" call
-// asked for DETAILED + SUMMARY + OVERALL_SCORE in one response with
-// max_tokens: 2600, and DETAILED alone (a genuinely thorough,
-// stage-by-stage narrative) used up the entire budget, cutting off
-// before SUMMARY/OVERALL_SCORE were ever generated. Split into two
-// separate parallel calls: generateDetailed (its own generous 3500
-// token budget, nothing competing with it) and generateSummaryScore
-// (a small, protected budget that can no longer be starved by however
-// long Detailed happens to run). Now 4 parallel calls total instead of
-// 3 — no time-pressure concern, still a Background Function.
+// Real bug fix: Summary and Overall Score both came back
+// "(not generated)" — Detailed's own length starved the shared token
+// budget in the same call. Split into separate parallel calls.
 //
 // Produces the 8 Meeting Analysis outputs, mapped onto `reports`
-// columns like this (7 display tabs, since Score+Probability share one
-// tab with their reasoning):
+// columns (7 display tabs, since Score+Probability share one tab):
 //   Detailed                -> ai_output_detailed
 //   Summary                 -> ai_output_summary
 //   Overall Score (/10)     -> overall_score (number) + reasoning in ai_output_extra
@@ -76,24 +71,14 @@
 //   Missed Items            -> ai_output_missed
 //   Emergent Opportunities  -> ai_output_opportunities
 //   Points to Ponder        -> ai_output_ponder
+// Plus (Build 38) Self-Reflection Eval and Client Perspective:
+//   ai_output_self_reflection, ai_output_client_perspective
 //
-// Split into 3 parallel calls (no time-pressure — Background Function,
-// same pattern as presales-generate-background.js):
-//   1. "core"    — Detailed, Summary, Overall Score
-//   2. "scoring" — Probability of Close, Recommended Actions
-//   3. "gaps"    — Missed Items, Emergent Opportunities, Points to Ponder
-// All three get the full lmi-context.md — unlike Presales Prep, meeting
-// scoring is methodology-dependent throughout (talk-ratio phase-
-// awareness, the 4-stage concern model, verbalised-vs-asserted
-// Need-Payoff, stakeholder calibration), not just in one section.
-//
-// The "asked for referrals = No -> auto-reminder action" rule is
-// enforced in CODE, not left to the AI to remember — appended
-// deterministically to recommended_actions after generation.
+// 5 parallel calls total (no time-pressure — Background Function).
 
 const fs = require('fs');
 const path = require('path');
-const { callClaude, extractText, supaPatch, getMemberFromSession } = require('./_lib.js');
+const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession } = require('./_lib.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -113,8 +98,6 @@ try {
   LMI_CONTEXT_LOAD_ERROR = err.message;
 }
 
-// BUILD 27: LMI/Non-LMI segmentation — see presales-generate-
-// background.js for the full rationale, identical pattern here.
 const SPIN_CANDIDATE_PATHS = [
   path.join(__dirname, 'spin-context.md'),
   path.join(__dirname, 'netlify', 'functions', 'spin-context.md'),
@@ -141,23 +124,11 @@ function parseMarkers(text, markers) {
   );
   let m;
   while ((m = pattern.exec(text)) !== null) {
-    // Normalize to uppercase regardless of how the AI actually cased the
-    // header (BUILD 25 fix — confirmed root cause of a silent, no-error
-    // content loss: the AI wrote "### Summary" instead of the exact
-    // "### SUMMARY" requested, and the old case-sensitive regex simply
-    // never matched it at all. No exception was thrown — the section
-    // just silently never made it into the result, which is why no
-    // failure note appeared anywhere. OVERALL_SCORE survived in the
-    // same response because its format instruction is far more rigid
-    // ("the FIRST line must be exactly...") than Summary's looser one.
     result[m[1].toUpperCase()] = m[2].trim();
   }
   return result;
 }
 
-// Pulls a leading "SCORE: 7.5" / "PROBABILITY: 45" style number off the
-// front of a section, returning { number, rest } — rest is the
-// reasoning text with that line removed, so it doesn't repeat in the UI.
 function extractLeadingNumber(text, label) {
   if (!text) return { number: null, rest: text || '' };
   const re = new RegExp(`^\\s*${label}:\\s*([\\d.]+)\\s*\\n?`, 'i');
@@ -193,13 +164,6 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
       });
     }
 
-    // BUILD 31 fix: this describes raw form data BACK to the AI in the
-    // prompt itself — even with the correct system context loaded,
-    // seeing "RRR"/"PBM" terminology in the INPUT data risked the model
-    // mirroring that vocabulary in its own output regardless of
-    // instructions. The underlying JSON field names (meeting.pbm,
-    // meeting.rrr_established, etc.) stay the same either way — only
-    // how they're DESCRIBED here changes.
     const pbmAll = [...(meeting.pbm || []), ...(meeting.pbm_specific || [])];
     if (pbmAll.length) s.push(`${isNonLmi ? 'Top Buying Motive' : 'PBM'}: ${pbmAll.join('; ')}`);
     if (meeting.quantified_opportunity) s.push(`Quantified Opportunity: ${meeting.quantified_opportunity}`);
@@ -240,10 +204,6 @@ Attendees: ${meeting.attendees || '(not specified)'}`];
   return parts.join('\n\n');
 }
 
-// The stage list itself was hardcoded with LMI terms directly in the
-// prompt text (PBM/Needs=Motives/RRR) — swapping only the system
-// context wouldn't have been enough, a non-LMI user would still have
-// been asked to reason in LMI-specific terms. Segment-aware helper.
 function stageListForSegment(isNonLmi) {
   return isNonLmi
     ? 'Situation, Problem, Implication, Need-Payoff, Objections/Stalls handling, Closing'
@@ -356,6 +316,37 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY these 
   }
 }
 
+async function generateReflectionAndClient(prospect, meeting, methodologyContext, isNonLmi) {
+  try {
+    const hasUserReflection = meeting.self_reflection && (meeting.self_reflection.what_went_well || meeting.self_reflection.what_could_improve || meeting.self_reflection.sales_cycle_adherence_percent);
+    const reflectionNote = hasUserReflection
+      ? ' The salesperson already answered these same three questions about themselves (visible in SALESPERSON\'S OWN REFLECTION above, if present) — form your own independent read first, then explicitly note where you agree or diverge from their self-assessment, rather than just restating what they said.'
+      : ' The salesperson didn\'t fill in their own self-reflection for this meeting, so this is your independent read alone.';
+
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
+
+---
+
+Using the sales context above, respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+
+### SELF_REFLECTION_EVAL
+Your own independent answers to the same three questions a salesperson would ask themselves after a meeting: What went well? What could improve? What's your estimate of adherence to good sales process, as a percentage?${reflectionNote} Structure your answer with these three sub-points clearly labeled: **What went well**, **What could improve**, **Estimated adherence**.
+
+### CLIENT_PERSPECTIVE
+A short read of how this conversation likely landed from the PROSPECT's own side — grounded specifically in what they actually said and how they engaged (their tone, their questions, what they volunteered vs. what had to be drawn out), not speculation beyond what the conversation itself supports. End this section with exactly this sentence on its own line: "This client perspective is indicative and not a firm opinion."`;
+
+    const res = await callClaude({
+      system: methodologyContext,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1400
+    });
+    const sections = parseMarkers(extractText(res), ['SELF_REFLECTION_EVAL', 'CLIENT_PERSPECTIVE']);
+    return { ok: true, sections };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 exports.handler = async function (event) {
   let payload;
   try {
@@ -380,12 +371,30 @@ exports.handler = async function (event) {
       return { statusCode: 401, body: 'Not authorized.' };
     }
 
-    // BUILD 27: LMI/Non-LMI segmentation — see presales-generate-
-    // background.js for the full rationale, identical pattern here.
     const isNonLmi = member.user_segment === 'non_lmi';
-    const METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
+    let METHODOLOGY_CONTEXT = isNonLmi ? SPIN_CONTEXT : LMI_CONTEXT;
     const METHODOLOGY_LOAD_ERROR = isNonLmi ? SPIN_CONTEXT_LOAD_ERROR : LMI_CONTEXT_LOAD_ERROR;
     const METHODOLOGY_LABEL = isNonLmi ? 'spin-context.md' : 'lmi-context.md';
+
+    // BUILD 40: pre-built industry context library, layered in for
+    // Non-LMI users who've selected one — see settings.js. Industry
+    // context comes first (category-level: general SaaS/Manufacturing/
+    // etc. sales patterns), then any company-specific org_context_
+    // research on top if also present.
+    if (isNonLmi && member.industry_context_id) {
+      try {
+        const industryRows = await supaGet(`industry_contexts?id=eq.${member.industry_context_id}&select=industry_name,context_content`);
+        if (industryRows.length) {
+          METHODOLOGY_CONTEXT += `\n\n---\n\n## Industry Context: ${industryRows[0].industry_name}\n${industryRows[0].context_content}`;
+        }
+      } catch (e) {
+        // A failed industry-context lookup shouldn't block the whole
+        // report — proceed with the base methodology context alone.
+      }
+    }
+    if (isNonLmi && member.org_context_research) {
+      METHODOLOGY_CONTEXT += `\n\n---\n\n## The Salesperson's Own Company (for your grounding — this is who THEY work for, not the prospect)\nCompany: ${member.selling_company_name || '(not specified)'}\n${member.org_context_research}`;
+    }
 
     if (METHODOLOGY_LOAD_ERROR) {
       await supaPatch(`reports?id=eq.${report_id}`, {
@@ -395,14 +404,15 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
-    const [detailedResult, summaryScoreResult, scoringResult, gapsResult] = await Promise.allSettled([
+    const [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult] = await Promise.allSettled([
       generateDetailed(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateSummaryScore(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateScoring(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
-      generateGaps(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
+      generateGaps(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateReflectionAndClient(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
     ]);
 
-    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult].map((r) =>
+    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult].map((r) =>
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
 
@@ -420,31 +430,21 @@ exports.handler = async function (event) {
     if (!results[1].ok) failedParts.push('Summary / Score');
     if (!results[2].ok) failedParts.push('Probability of Close / Recommended Actions');
     if (!results[3].ok) failedParts.push('Missed Items / Opportunities / Points to Ponder');
+    if (!results[4].ok) failedParts.push('Self-Reflection Evaluation / Client Perspective');
 
     const scoreParsed = extractLeadingNumber(allSections.OVERALL_SCORE, 'SCORE');
     const probParsed = extractLeadingNumber(allSections.PROBABILITY_OF_CLOSE, 'PROBABILITY');
 
-    // Score + Probability reasoning share one tab in the UI — combine
-    // them into ai_output_extra with clear sub-headings.
     const scoreProbReasoning = [
       '## Overall Score', scoreParsed.rest || '(not generated)',
       '', '## Probability of Close', probParsed.rest || '(not generated)'
     ].join('\n');
 
-    // Turn the bulleted Recommended Actions text into a simple array for
-    // the jsonb column, one string per bullet line.
     const actionsText = allSections.RECOMMENDED_ACTIONS || '';
     const actionsArray = actionsText.split('\n')
-      // BUILD 26 fix: a standalone "---" line (the AI sometimes adds
-      // these as section dividers) only had its FIRST dash stripped by
-      // the old regex, leaving a stray "--" as its own meaningless
-      // bullet. Now strips ALL leading dashes/asterisks, and drops any
-      // line left with no actual letters or digits.
       .map((l) => l.replace(/^[-*]+\s*/, '').trim())
       .filter((l) => l.length > 0 && /[a-zA-Z0-9]/.test(l));
 
-    // The "asked for referrals = No" auto-reminder — enforced in code,
-    // not left to the AI to remember to include.
     if (meeting.asked_referrals === 'no') {
       actionsArray.push('Ask for referrals next time — this wasn\'t done in this meeting.');
     }
@@ -464,6 +464,8 @@ exports.handler = async function (event) {
       ai_output_missed: allSections.MISSED_ITEMS || '(not generated)',
       ai_output_opportunities: allSections.EMERGENT_OPPORTUNITIES || '(not generated)',
       ai_output_ponder: ponder,
+      ai_output_self_reflection: allSections.SELF_REFLECTION_EVAL || '(not generated)',
+      ai_output_client_perspective: allSections.CLIENT_PERSPECTIVE || '(not generated)',
       status: 'complete'
     });
 
