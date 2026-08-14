@@ -1,5 +1,5 @@
 // PREPDO — presales-generate-background.js
-// BUILD 40 | 2026-08-14
+// BUILD 40 | 2026-08-14 
 // Reconstructed from conversation record after a sandbox reset —
 // combines the exact Build 18 base text (pasted in full earlier) with
 // the Build 19 perspective-shift edits (made via targeted str_replace
