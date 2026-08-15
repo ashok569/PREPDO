@@ -1,4 +1,4 @@
-# SPIN Sales Context (v1 draft) — Reference Frame for PREPDO's Non-LMI Users
+# SPIN Sales Context (v1 draft)  — Reference Frame for PREPDO's Non-LMI Users
 
 **Purpose:** This is the Non-LMI counterpart to `lmi-context.md`. It's embedded into every PREPDO AI call (Presales Prep, Meeting Analysis, Role Play debrief) for users flagged as `non_lmi`, so their reports reason entirely in general B2B consultative-selling terms — grounded in Neil Rackham's SPIN Selling framework (a well-established, publicly documented methodology, not proprietary to any single organization) plus widely-taught consultative sales practice.
 
