@@ -1,5 +1,25 @@
 // PREPDO — settings.js
+// BUILD 49 | 2026-08-16
+// Added 'export-all-data' — a temporary, manual full-database backup
+// for platform admin, given Supabase Free tier has zero automated
+// backups (confirmed directly). Dumps every table as one combined
+// JSON structure. Worth being honest about this being a stopgap, not
+// a real backup strategy — and about a real scaling ceiling: this
+// runs as a regular (non-background) function, so it will eventually
+// hit Netlify's response-size/execution-time limits if data volume
+// grows substantially. Fine for current, still-small scale; revisit
+// if/when that changes.
+//
 // BUILD 42 | 2026-08-14
+// Added 'get-industry-preview' — a genuinely public read action (NOT
+// admin-gated), for the two-column Settings redesign: a regular Non-
+// LMI user picking their own industry now sees a live preview of that
+// industry's content before saving. Deliberately separate from
+// 'admin-get-industry-content' below — viewing this content isn't
+// sensitive (the AI already uses it when generating that user's own
+// reports), only EDITING shared library content stays admin-only.
+//
+// BUILD 39 | 2026-08-14
 // Added the pre-built industry context library (migration_v12.sql/
 // migration_v13.sql). Three new actions:
 //   'list-industries' — names only, for the dropdown, open to any
@@ -143,6 +163,35 @@ exports.handler = async function (event) {
         updated_at: new Date().toISOString()
       });
       return respond(200, { ok: true });
+    }
+
+    if (action === 'export-all-data') {
+      // Temporary measure — Supabase Free tier has zero automated
+      // backups (confirmed directly, not assumed). This is a stopgap
+      // manual export, not a substitute for actually moving to a
+      // tier with real backups when that becomes the priority it
+      // should be. Dumps every table as one combined JSON structure —
+      // simplest reliable format, preserves exact data types
+      // (including jsonb columns) faithfully, at the cost of not
+      // being directly Excel-readable. A CSV-per-table version would
+      // be a reasonable future upgrade if that's ever actually needed.
+      if (member.key_type !== 'admin') {
+        return respond(403, { ok: false, message: 'Admin only.' });
+      }
+      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings'];
+      const dump = { exported_at: new Date().toISOString(), tables: {} };
+      for (const table of tables) {
+        try {
+          dump.tables[table] = await supaGet(`${table}?select=*`);
+        } catch (err) {
+          // A missing/inaccessible table shouldn't abort the whole
+          // export — record the failure and keep going, so a real
+          // backup attempt doesn't come back completely empty over
+          // one bad table.
+          dump.tables[table] = { error: err.message };
+        }
+      }
+      return respond(200, { ok: true, dump });
     }
 
     if (action === 'research-org-context') {
