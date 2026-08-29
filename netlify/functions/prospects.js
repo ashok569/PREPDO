@@ -1,4 +1,13 @@
 // PREPDO — prospects.js
+// BUILD 15 | 2026-08-29
+// Added 'list-my-roleplays' — lists ALL roleplay reports, standalone
+// and prospect-tied alike, for the new Roleplay History view.
+// Standalone roleplays (prospect_id null) had no prospect page to
+// attach to and were genuinely invisible anywhere after the session
+// ended — confirmed as a real gap from actual use, not hypothetical.
+// Embeds the linked prospect's name via PostgREST's foreign-table
+// syntax where one exists; comes back null for standalone sessions.
+//
 // BUILD 14 | 2026-08-12
 // New: folder support (migration_v8.sql) — list now accepts an
 // optional folder_id filter (a real folder id, the literal string
@@ -66,8 +75,24 @@ exports.handler = async function (event) {
       return respond(200, { ok: true, prospects: rows });
     }
 
+    if (action === 'list-my-roleplays') {
+      // BUILD 15: standalone roleplays (prospect_id null — the not-null
+      // constraint on it was dropped via a standalone SQL command
+      // given directly, not a numbered migration file) have no
+      // prospect page to attach to — they were genuinely invisible
+      // anywhere after the session ended. This lists EVERY roleplay
+      // report, standalone and prospect-tied alike, for the new
+      // dedicated Roleplay History view. Embeds the linked prospect's
+      // company/contact name via PostgREST's foreign-table syntax
+      // where one exists; comes back null for standalone sessions,
+      // handled on the frontend.
+      const scope = member.key_type === 'admin' ? '' : `&owner_id=eq.${member.id}`;
+      const rows = await supaGet(`reports?report_type=eq.role_play&select=*,prospects(company_name,prospect_name)${scope}&order=created_at.desc`);
+      return respond(200, { ok: true, roleplays: rows });
+    }
+
     if (action === 'create') {
-      const { company_name, company_website, prospect_name, linkedin_url, position, meeting_objective, notes } = payload;
+      const { company_name, company_website, prospect_name, linkedin_url, position, meeting_objective, notes, partner_or_salesperson_name, referred_by, linkedin_paste, prospect_name_2, position_2, linkedin_url_2 } = payload;
       if (!company_name) {
         return respond(400, { ok: false, message: 'Company name is required.' });
       }
@@ -79,7 +104,13 @@ exports.handler = async function (event) {
         linkedin_url: linkedin_url || null,
         position: position || null,
         meeting_objective: meeting_objective || null,
-        notes: notes || null
+        notes: notes || null,
+        partner_or_salesperson_name: partner_or_salesperson_name || null,
+        referred_by: referred_by || null,
+        linkedin_paste: linkedin_paste || null,
+        prospect_name_2: prospect_name_2 || null,
+        position_2: position_2 || null,
+        linkedin_url_2: linkedin_url_2 || null
       });
       return respond(200, { ok: true, prospect: row });
     }
