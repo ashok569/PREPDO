@@ -1,6 +1,3 @@
-### `gleaner-generate-background.js` — Build 3
-
-```javascript
 // PREPDO — gleaner-generate-background.js
 // BUILD 3 | 2026-09-06
 // Real gap fix, raised directly: the previous version had no way to
@@ -260,4 +257,3 @@ If you genuinely find nothing new and specific enough to be worth adding — whi
     return { statusCode: 200, body: 'done (failed - exception)' };
   }
 };
-```
