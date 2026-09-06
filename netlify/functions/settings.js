@@ -1,4 +1,10 @@
 // PREPDO — settings.js
+// BUILD 50 | 2026-09-06
+// Added 'api_usage_log' to the Full Data Backup export table list —
+// the new real API usage tracking table (migration_v16.sql, built
+// alongside prompt caching in _lib.js) becomes reviewable through the
+// backup you already have, rather than needing a separate new UI.
+//
 // BUILD 49 | 2026-08-16
 // Added 'export-all-data' — a temporary, manual full-database backup
 // for platform admin, given Supabase Free tier has zero automated
@@ -46,7 +52,7 @@
 // from lmi-context.md. Gating that behind admin would mean a real
 // non-LMI user could never complete their own setup at all.
 
-const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions } = require('./_lib.js');
 
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
@@ -178,7 +184,7 @@ exports.handler = async function (event) {
       if (member.key_type !== 'admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
-      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings'];
+      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log'];
       const dump = { exported_at: new Date().toISOString(), tables: {} };
       for (const table of tables) {
         try {
@@ -212,6 +218,7 @@ exports.handler = async function (event) {
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }],
           max_tokens: 600
         });
+        await logApiUsage({ member_id: member.id, report_id: null, function_name: 'settings', action: 'research-org-context', model: res.model, claudeResponse: res });
         researchText = extractText(res) || 'Nothing specific found — proceed with the company name and website alone as context.';
       } catch (err) {
         researchText = 'Research failed (' + err.message + ') — proceed with the company name and website alone as context.';
