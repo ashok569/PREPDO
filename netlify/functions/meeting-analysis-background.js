@@ -1,4 +1,15 @@
+### `meeting-analysis-background.js` — Build 41
+
+```javascript
 // PREPDO — meeting-analysis-background.js
+// BUILD 41 | 2026-09-06
+// Added prompt caching (all 5 parallel calls embed the same, large
+// METHODOLOGY_CONTEXT — same honest caveat as presales-generate-
+// background.js Build 41 applies here: parallel calls are less
+// certain to hit a warm cache with each other than roleplay's
+// sequential turns) and real usage tracking on all 5 calls, built
+// together per explicit request.
+//
 // BUILD 40 | 2026-08-14
 // Reconstructed from conversation record after a sandbox reset (the
 // exact Build 31 text was pasted in full earlier and used as ground
@@ -78,7 +89,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession } = require('./_lib.js');
+const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession, buildCacheableSystem, logApiUsage } = require('./_lib.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -222,12 +233,12 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY this m
 (genuine narrative analysis of how the meeting actually went, stage by stage through: ${stageListForSegment(isNonLmi)}. Note explicitly where the salesperson followed good technique and where they diverged. When assessing talk-ratio, remember the first 5-10 minutes (the opening/rapport phase) is intentionally salesperson-heavy — only judge the 20/80 ratio for what happens AFTER the shift into real probing.)`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 3500
     });
     const sections = parseMarkers(extractText(res), ['DETAILED']);
-    return { ok: true, sections };
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -249,12 +260,12 @@ The FIRST line must be exactly: SCORE: X (a number 0-10, one decimal place allow
 Then a blank line, then 2-3 sentences of reasoning grounded in specific, named criteria from the meeting — never an impressionistic number.`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1000
     });
     const sections = parseMarkers(extractText(res), ['SUMMARY', 'OVERALL_SCORE']);
-    return { ok: true, sections };
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -276,12 +287,12 @@ Then a blank line, then reasoning that explicitly addresses: was Need-Payoff rea
 A bulleted list of specific, concrete next actions for the salesperson — tied to what actually happened in this specific meeting, not generic sales advice.`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1800
     });
     const sections = parseMarkers(extractText(res), ['PROBABILITY_OF_CLOSE', 'RECOMMENDED_ACTIONS']);
-    return { ok: true, sections };
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -305,12 +316,12 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY these 
 (a neutral reflection space for genuine ambiguity or a tentative hunch. May be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1600
     });
     const sections = parseMarkers(extractText(res), ['MISSED_ITEMS', 'EMERGENT_OPPORTUNITIES', 'POINTS_TO_PONDER']);
-    return { ok: true, sections };
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -336,12 +347,12 @@ Your own independent answers to the same three questions a salesperson would ask
 A short read of how this conversation likely landed from the PROSPECT's own side — grounded specifically in what they actually said and how they engaged (their tone, their questions, what they volunteered vs. what had to be drawn out), not speculation beyond what the conversation itself supports. End this section with exactly this sentence on its own line: "This client perspective is indicative and not a firm opinion."`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1400
     });
     const sections = parseMarkers(extractText(res), ['SELF_REFLECTION_EVAL', 'CLIENT_PERSPECTIVE']);
-    return { ok: true, sections };
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -416,6 +427,16 @@ exports.handler = async function (event) {
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
 
+    // Log real usage for every section that actually ran, regardless of
+    // downstream success — a failed parse after a successful, billed
+    // API call still cost real money and should be logged.
+    const sectionNames = ['detailed', 'summary_score', 'scoring', 'gaps', 'reflection'];
+    await Promise.all(results.map((r, i) =>
+      r.usage
+        ? logApiUsage({ member_id: member.id, report_id, function_name: 'meeting-analysis-background', action: sectionNames[i], model: r.model, claudeResponse: { usage: r.usage } })
+        : Promise.resolve()
+    ));
+
     if (results.every((r) => !r.ok)) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
@@ -480,3 +501,4 @@ exports.handler = async function (event) {
     return { statusCode: 200, body: 'done (failed - exception)' };
   }
 };
+```
