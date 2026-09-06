@@ -1,24 +1,23 @@
+### `netlify.toml`
+
+```toml
 [build]
   publish = "."
   functions = "netlify/functions"
 
-# lmi-context.md and spin-context.md are read at runtime via
-# fs.readFileSync, not require()'d as code — Netlify's function bundler
-# only auto-detects JS dependencies, so a plain data file like this
-# gets silently left out of the deployed function package unless
-# explicitly listed here. Without this, the file exists in the repo but
-# not in the actual running function (visible as an ENOENT/"Not found"
-# for /var/task/lmi-context.md or /var/task/spin-context.md at
-# runtime — this exact error has now happened more than once for
-# exactly this reason, so treat this file as load-bearing whenever a
-# new function needs either context file).
+# lmi-context.md is read at runtime via fs.readFileSync, not require()'d
+# as code — Netlify's function bundler only auto-detects JS dependencies,
+# so a plain data file like this gets silently left out of the deployed
+# function package unless explicitly listed here. Without this, the file
+# exists in the repo but not in the actual running function (visible as
+# an ENOENT for /var/task/lmi-context.md at runtime).
 # BUILD 12: added presales-generate-background alongside the original
 # presales-generate — the async rewrite moved the actual file-reading
 # code into the new background function, but this config wasn't updated
 # to match, so it hit the identical missing-file error again under a
 # different function name.
-# BUILD 30: LMI/Non-LMI segmentation — every function below also needs
-# spin-context.md included, same rule.
+# BUILD 30: LMI/Non-LMI segmentation — every function below now also
+# needs spin-context.md included, same rule, added proactively.
 [functions."presales-generate"]
   included_files = ["netlify/functions/lmi-context.md", "netlify/functions/spin-context.md"]
 
@@ -36,7 +35,14 @@
 [functions."roleplay-debrief-background"]
   included_files = ["netlify/functions/lmi-context.md", "netlify/functions/spin-context.md"]
 
+# Gleaner (added 2026-09-06): scans real reports and compares against
+# both context files to suggest new additions — needs both, added
+# proactively from the start, same rule as every function above.
+[functions."gleaner-generate-background"]
+  included_files = ["netlify/functions/lmi-context.md", "netlify/functions/spin-context.md"]
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
   status = 200
+```
