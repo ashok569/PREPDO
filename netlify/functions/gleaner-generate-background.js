@@ -1,4 +1,25 @@
 // PREPDO — gleaner-generate-background.js
+// BUILD 5 | 2026-09-06
+// Two real gaps fixed after reviewing the first actual Gleaner output:
+// (1) a prospect with several analyses could previously dominate the
+// 30-report cap with its own repeat history, crowding out other
+// accounts — now deduped to the latest report per (prospect,
+// report_type), with standalone roleplays never deduped against each
+// other since each is independent. (2) nothing tracked which reports
+// a past run had already covered, so the same reports got rescanned
+// every time once the corpus grew past 30 — reports_scanned_ids was
+// already being stored specifically for this since Build 1, but the
+// actual exclusion logic was never wired up until now. Both fixes
+// need JS-side filtering (fetch a 200-report candidate pool, then
+// dedupe/exclude/cap here) since a composite-key dedupe and an
+// arbitrarily-growing exclusion list aren't cleanly expressible as
+// PostgREST URL filters. Verified the combined filter+dedup logic
+// directly against a simulated scenario covering all four cases
+// (an older duplicate for the same prospect+type, a different type
+// for the same prospect, an already-scanned report, two independent
+// standalones) before shipping — confirmed exactly the expected
+// results, not just reasoned through.
+//
 // BUILD 4 | 2026-09-06
 // Real fix confirmed via an actual timeout on a live run: this call's
 // prompt is genuinely larger than anything else in the app (both
@@ -166,12 +187,62 @@ exports.handler = async function (event) {
     // which is real evidence that betting on a deeper nested embed
     // here would be a less proven, less safe choice than matching
     // what's already confirmed to work elsewhere in this codebase.
-    const reports = await supaGet(
-      `reports?status=eq.complete&ai_output_detailed=not.is.null&select=id,report_type,created_at,ai_output_detailed,prospects(company_name),team_members!owner_id(user_segment,industry_context_id)&order=created_at.desc&limit=${REPORT_SAMPLE_CAP}`
+    // BUILD 5, two real gaps fixed per explicit request after reviewing
+    // the first actual Gleaner output:
+    //
+    // 1. A prospect with several analyses (e.g. multiple Meeting
+    // Analysis reports over time as a relationship progresses) could
+    // previously have MULTIPLE of its own reports fill up the 30-report
+    // cap, crowding out other prospects entirely — the batch should
+    // reflect a diverse spread of situations, not be dominated by one
+    // account's repeat history. Deduping to the latest report per
+    // (prospect, report_type) fixes this. Standalone roleplays
+    // (prospect_id null) are NOT deduped against each other — each is
+    // its own independent practice session, not a repeat analysis of
+    // the same account.
+    //
+    // 2. Nothing tracked which reports a PAST run had already covered,
+    // so every run re-scanned the same reports repeatedly once the
+    // corpus grew past 30 — reports_scanned_ids was already being
+    // stored on every gleaner_reports row specifically for this (see
+    // the original Build 1 comment), but the exclusion logic itself
+    // was never actually wired up until now.
+    //
+    // Both fixes need filtering done in JavaScript rather than pushed
+    // into the PostgREST query string — deduping by a composite key
+    // isn't expressible as a URL filter, and excluding a growing list
+    // of already-scanned UUIDs via `not.in.(...)` would make the query
+    // string increasingly fragile as more runs accumulate. So: fetch a
+    // generously larger raw candidate pool, then filter/dedupe here,
+    // then cap at REPORT_SAMPLE_CAP.
+    const CANDIDATE_POOL_SIZE = 200;
+
+    const pastRuns = await supaGet(`gleaner_reports?status=eq.complete&select=reports_scanned_ids`);
+    const alreadyScannedIds = new Set(
+      pastRuns.flatMap((run) => run.reports_scanned_ids || [])
     );
 
+    const candidates = await supaGet(
+      `reports?status=eq.complete&ai_output_detailed=not.is.null&select=id,report_type,created_at,ai_output_detailed,prospect_id,prospects(company_name),team_members!owner_id(user_segment,industry_context_id)&order=created_at.desc&limit=${CANDIDATE_POOL_SIZE}`
+    );
+
+    const notAlreadyScanned = candidates.filter((r) => !alreadyScannedIds.has(r.id));
+
+    const seenProspectTypeKeys = new Set();
+    const deduped = notAlreadyScanned.filter((r) => {
+      if (!r.prospect_id) return true; // standalone — never deduped against other standalones
+      const key = `${r.prospect_id}::${r.report_type}`;
+      if (seenProspectTypeKeys.has(key)) return false; // an earlier (= more recent, since already sorted desc) report for this exact prospect+type already kept
+      seenProspectTypeKeys.add(key);
+      return true;
+    });
+
+    const reports = deduped.slice(0, REPORT_SAMPLE_CAP);
+
     // One batched follow-up query for industry names, keyed by id —
-    // matches the established pattern, avoids one lookup call per report.
+    // matches the established pattern, avoids one lookup call per
+    // report. Deliberately runs AFTER dedup/filtering, on the final
+    // ≤30-report set only, not on the full 200-report candidate pool.
     const industryIds = [...new Set(reports.map((r) => r.team_members?.industry_context_id).filter(Boolean))];
     let industryNameById = {};
     if (industryIds.length) {
@@ -180,11 +251,14 @@ exports.handler = async function (event) {
     }
 
     if (!reports.length) {
+      const nothingNewMessage = candidates.length > 0
+        ? 'No new reports since the last scan — every completed report has already been covered by a previous Gleaner run. Nothing to glean this time.'
+        : 'No completed reports with detailed content exist yet to scan. Nothing to glean.';
       await supaPatch(`gleaner_reports?id=eq.${gleaner_report_id}`, {
         status: 'complete',
         reports_scanned_count: 0,
         reports_scanned_ids: [],
-        output_markdown: 'No completed reports with detailed content exist yet to scan. Nothing to glean.'
+        output_markdown: nothingNewMessage
       });
       return { statusCode: 200, body: 'done (nothing to scan)' };
     }
