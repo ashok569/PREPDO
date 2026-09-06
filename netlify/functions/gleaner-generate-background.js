@@ -1,4 +1,12 @@
 // PREPDO — gleaner-generate-background.js
+// BUILD 4 | 2026-09-06
+// Real fix confirmed via an actual timeout on a live run: this call's
+// prompt is genuinely larger than anything else in the app (both
+// context files combined, plus up to 30 full reports stacked on top),
+// so _lib.js's default 90s timeout was too tight for it specifically.
+// Bumped to 240s on this one call — this runs as a background
+// function precisely because it has room for a longer single call.
+//
 // BUILD 3 | 2026-09-06
 // Real gap fix, raised directly: the previous version had no way to
 // know which methodology (LMI vs SPIN) — or, for a Non-LMI report,
@@ -230,10 +238,19 @@ Repeat one bullet per genuine finding, in exactly that format — the target tag
 
 If you genuinely find nothing new and specific enough to be worth adding — which is a legitimate, expected outcome, especially on a small batch — say so plainly under the same header: "No new patterns found worth adding in this batch." Do not force bullets to fill space. Quality and genuine novelty matter far more than quantity here.`;
 
+    // BUILD 4 real fix: confirmed via an actual timeout on a live run
+    // — this call is genuinely larger than anything else in the app
+    // (lmi-context.md + spin-context.md combined, plus up to 30 full
+    // reports' detailed content stacked on top), so _lib.js's default
+    // 90s timeout was simply too tight for it. This runs as a
+    // background function specifically because it has room for a
+    // longer single call; 240s gives real headroom for a large batch
+    // without being unbounded.
     const res = await callClaude({
       system: buildCacheableSystem(LMI_CONTEXT + '\n\n---\n\n' + SPIN_CONTEXT),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 4000
+      max_tokens: 4000,
+      timeoutMs: 240000
     });
     await logApiUsage({ member_id: member.id, report_id: null, function_name: 'gleaner-generate-background', action: 'scan', model: res.model, claudeResponse: res });
 
