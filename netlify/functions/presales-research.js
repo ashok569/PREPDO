@@ -1,4 +1,13 @@
+### `presales-research.js` — Build 8
+
+```javascript
 // PREPDO — presales-research.js
+// BUILD 8 | 2026-09-06
+// Added real usage tracking (no caching here — each topic's search
+// content is genuinely unique per call, nothing static to cache)
+// so total AI cost tracking is complete, not just the LMI-context-
+// heavy calls elsewhere.
+//
 // BUILD 7 | 2026-08-22
 // Two real bugs fixed from actual testing with two comma-separated
 // group-company websites:
@@ -35,7 +44,7 @@
 // at this step — that only happens once the user confirms and calls
 // presales-generate.
 
-const { getMemberFromSession, callClaude, extractText, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, callClaude, extractText, logApiUsage, respond, handleOptions } = require('./_lib.js');
 
 // Each topic is its own mini-session: one focused search, one small,
 // fast synthesis. Edit this list to change what gets researched —
@@ -102,7 +111,7 @@ Return 2-4 short bulleted markdown facts, only about this specific topic. If sea
       max_tokens: 700
     });
     const text = extractText(claudeRes);
-    return { key: topic.key, label: topic.label, ok: true, text: text || 'Nothing specific found on this topic.' };
+    return { key: topic.key, label: topic.label, ok: true, text: text || 'Nothing specific found on this topic.', model: claudeRes.model, usage: claudeRes.usage };
   } catch (err) {
     return { key: topic.key, label: topic.label, ok: false, error: err.message };
   }
@@ -143,6 +152,14 @@ exports.handler = async function (event) {
 
     const sections = results.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
+    // No report_id exists yet at this stage — research happens before
+    // a report is created — logApiUsage handles a null report_id fine.
+    await Promise.all(sections.map((s) =>
+      s.usage
+        ? logApiUsage({ member_id: member.id, report_id: null, function_name: 'presales-research', action: s.key, model: s.model, claudeResponse: { usage: s.usage } })
+        : Promise.resolve()
+    ));
+
     const succeeded = sections.filter((s) => s.ok);
     const failed = sections.filter((s) => !s.ok);
 
@@ -170,3 +187,4 @@ exports.handler = async function (event) {
     return respond(500, { ok: false, message: 'Server error: ' + err.message });
   }
 };
+```
