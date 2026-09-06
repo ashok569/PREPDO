@@ -1,6 +1,3 @@
-### `gleaner-start.js` — Build 1
-
-```javascript
 // PREPDO — gleaner-start.js
 // BUILD 1 | 2026-09-06
 // New file. Mirrors the established start/background/poll pattern
@@ -66,4 +63,3 @@ exports.handler = async function (event) {
     return respond(500, { ok: false, message: 'Server error: ' + err.message });
   }
 };
-```
