@@ -1,6 +1,3 @@
-### `gleaner.js` — Build 1
-
-```javascript
 // PREPDO — gleaner.js
 // BUILD 1 | 2026-09-06
 // New file. Action-routed endpoint for the Gleaner admin UI: 'list'
@@ -67,4 +64,3 @@ exports.handler = async function (event) {
     return respond(500, { ok: false, message: 'Server error: ' + err.message });
   }
 };
-```
