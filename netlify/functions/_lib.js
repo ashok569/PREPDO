@@ -1,4 +1,40 @@
 // PREPDO — _lib.js
+// BUILD 23 | 2026-09-06
+// Added prompt caching support and real API usage tracking, built
+// together from day one per explicit request — tracking exists
+// specifically to validate caching's real savings against actual
+// logged numbers, not just the estimate that motivated building this.
+//
+// Caching: buildCacheableSystem() gives every calling function one
+// consistent, correct way to mark the large, static portion of a
+// system prompt (lmi-context.md, spin-context.md, industry content)
+// as cacheable, rather than each function reimplementing Anthropic's
+// content-block structure itself. Real technical honesty worth
+// keeping in mind when reading results later: this is reliable across
+// roleplay's SEQUENTIAL turns (each one only starts once the previous
+// finishes, comfortable time for a cache write to land) but genuinely
+// less certain across Presales Prep / Meeting Analysis's PARALLEL
+// calls, where several requests can reach Anthropic within
+// milliseconds of each other — a real race condition on whether the
+// cache write has propagated before the others check for it. Expect
+// roleplay's savings to show up more reliably in the logged data than
+// the parallel-call modules' savings, at least initially.
+//
+// Tracking: logApiUsage() captures the `usage` object Anthropic already
+// returns on every call (input_tokens, output_tokens, and — once
+// caching is live — cache_creation_input_tokens/cache_read_input_tokens)
+// and logs one row per call to a new api_usage_log table. Deliberately
+// fire-and-forget: a logging failure must never break the actual
+// report generation it's attached to, so this always fails silently
+// (with a console.error for visibility) rather than throwing.
+//
+// PRICING_PER_MILLION below is a plain, easily-updatable config object
+// — Anthropic's own rates changed mid-way through this very project
+// (Sonnet 5 introductory $2/$10 reverted to standard $3/$15 on Aug 31
+// 2026), so estimated_cost_usd in the log is only as accurate as this
+// config is kept current. Update the four numbers here if pricing
+// changes; nothing else needs to change.
+//
 // BUILD 22 | 2026-08-10
 // Real bug fix: confirmed via a genuinely stuck Meeting Analysis report
 // (status 'pending', error_message NULL, hours later) that the BUILD 16
@@ -228,11 +264,87 @@ function extractText(claudeResponse) {
     .join('\n');
 }
 
+// Current Anthropic pricing, per million tokens — Sonnet 5, standard
+// rate (the $2/$10 introductory rate reverted to $3/$15 on Aug 31 2026).
+// Cache write/read multipliers are Anthropic's own fixed multipliers on
+// the base input rate (1.25x for a 5-minute-TTL write, 0.1x for a read
+// — confirmed current, not assumed), not separate published prices —
+// computed directly from PRICE_INPUT below rather than hardcoded
+// separately, so they can never silently drift out of sync with it.
+// Update PRICE_INPUT/PRICE_OUTPUT here if Anthropic's rates change;
+// the cache prices recalculate automatically.
+const PRICING_PER_MILLION = {
+  input: 3.0,
+  output: 15.0,
+  get cacheWrite() { return this.input * 1.25; },
+  get cacheRead() { return this.input * 0.1; }
+};
+
+function estimateCostUsd(usage) {
+  const inputTokens = usage.input_tokens || 0;
+  const outputTokens = usage.output_tokens || 0;
+  const cacheWriteTokens = usage.cache_creation_input_tokens || 0;
+  const cacheReadTokens = usage.cache_read_input_tokens || 0;
+  return (
+    (inputTokens * PRICING_PER_MILLION.input) +
+    (outputTokens * PRICING_PER_MILLION.output) +
+    (cacheWriteTokens * PRICING_PER_MILLION.cacheWrite) +
+    (cacheReadTokens * PRICING_PER_MILLION.cacheRead)
+  ) / 1_000_000;
+}
+
+// Builds a correctly-structured `system` array with a cache_control
+// breakpoint on the large, static portion (staticContent — typically
+// lmi-context.md, spin-context.md, or industry content) — one
+// consistent, correct pattern every calling function can reuse rather
+// than each reimplementing Anthropic's content-block structure. The
+// cacheable block MUST come first and its content must be byte-for-byte
+// identical across calls to actually hit the cache — do not interpolate
+// any per-call values (prospect name, transcript, etc.) into
+// staticContent, only into dynamicContent, which comes after the
+// breakpoint and can safely vary every call.
+function buildCacheableSystem(staticContent, dynamicContent) {
+  const blocks = [
+    { type: 'text', text: staticContent, cache_control: { type: 'ephemeral' } }
+  ];
+  if (dynamicContent) {
+    blocks.push({ type: 'text', text: dynamicContent });
+  }
+  return blocks;
+}
+
+// Logs real usage from an actual Claude API response — every call
+// already returns this data, this just records it. Deliberately
+// fire-and-forget: a logging failure must never break the report
+// generation it's attached to, so this always swallows its own errors
+// (visible via console.error) rather than throwing. report_id may be
+// null (e.g. presales-research's pre-save step has no report yet).
+async function logApiUsage({ member_id, report_id, function_name, action, model, claudeResponse }) {
+  try {
+    const usage = claudeResponse.usage || {};
+    await supaPost('api_usage_log', {
+      member_id: member_id || null,
+      report_id: report_id || null,
+      function_name,
+      action: action || null,
+      model: model || null,
+      input_tokens: usage.input_tokens || 0,
+      output_tokens: usage.output_tokens || 0,
+      cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
+      cache_read_input_tokens: usage.cache_read_input_tokens || 0,
+      estimated_cost_usd: estimateCostUsd(usage)
+    });
+  } catch (err) {
+    console.error('logApiUsage failed (non-fatal, report generation continues):', err.message);
+  }
+}
+
 module.exports = {
   supaGet, supaPost, supaPatch, supaDelete,
   generateToken, hashToken,
   respond, handleOptions,
   computeSubscriptionFields,
   getMemberFromSession,
-  callClaude, extractText
+  callClaude, extractText,
+  buildCacheableSystem, logApiUsage
 };
