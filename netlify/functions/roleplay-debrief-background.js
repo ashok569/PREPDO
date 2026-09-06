@@ -1,5 +1,20 @@
 // PREPDO — roleplay-debrief-background.js
-// BUILD 40 | 2026-08-14 
+// BUILD 41 | 2026-09-06
+// Real correction: the Build 31 previously given here was built on a
+// stale, out-of-date base (Build 30, missing the industry-context-
+// library wiring this file's actual Build 40 already had) — caught and
+// flagged directly rather than left uncorrected. Reapplied prompt
+// caching and real usage tracking on top of the ACTUAL current Build
+// 40 base this time, matching the same pattern already correctly
+// applied to presales-generate-background.js and meeting-analysis-
+// background.js. The cache breakpoint covers the FULL, industry-
+// augmented METHODOLOGY_CONTEXT (after any industry/org-context
+// appending below) — same as those two files — so caching's benefit is
+// scoped per industry variant, not universal across all users, which
+// is the correct, expected behavior given the content genuinely
+// differs by variant.
+//
+// BUILD 40 | 2026-08-14
 // Reconstructed from conversation record after a sandbox reset (exact
 // Build 30 text was pasted in full earlier and used as ground truth
 // here), with the industry-context library wired in — same pattern as
@@ -47,7 +62,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession } = require('./_lib.js');
+const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession, buildCacheableSystem, logApiUsage } = require('./_lib.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -207,10 +222,11 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
 (a neutral reflection space for genuine ambiguity or a tentative hunch about this practice session. May be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: METHODOLOGY_CONTEXT,
+      system: buildCacheableSystem(METHODOLOGY_CONTEXT),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 3500
     });
+    await logApiUsage({ member_id: member.id, report_id, function_name: 'roleplay-debrief-background', action: 'debrief', model: res.model, claudeResponse: res });
 
     const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE', 'NEXT_PRACTICE', 'POINTS_TO_PONDER']);
     const scoreParsed = extractLeadingNumber(sections.OVERALL_SCORE, 'SCORE');
