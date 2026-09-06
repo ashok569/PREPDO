@@ -1,5 +1,13 @@
 // PREPDO — presales-generate-background.js
-// BUILD 40 | 2026-08-14 
+// BUILD 41 | 2026-09-06
+// Added prompt caching (the STRATEGY/DIGEST/SPIN calls all embed the
+// same, large METHODOLOGY_CONTEXT — a genuine, if PARALLEL-call,
+// caching candidate; see _lib.js Build 23 for the honest note on why
+// parallel calls are less certain to actually hit a warm cache with
+// each other than roleplay's sequential turns are) and real usage
+// tracking on all four calls, built together per explicit request.
+//
+// BUILD 40 | 2026-08-14
 // Reconstructed from conversation record after a sandbox reset —
 // combines the exact Build 18 base text (pasted in full earlier) with
 // the Build 19 perspective-shift edits (made via targeted str_replace
@@ -63,7 +71,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession } = require('./_lib.js');
+const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession, buildCacheableSystem, logApiUsage } = require('./_lib.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -153,7 +161,7 @@ Produce three sections for a presales prep report. Respond with EXACTLY these ma
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1200
     });
-    return { ok: true, sections: parseMarkers(extractText(res), ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS']) };
+    return { ok: true, sections: parseMarkers(extractText(res), ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS']), model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -180,11 +188,11 @@ Respond with EXACTLY this top-level header, nothing before it or after the conte
 ### STRATEGY`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 2200
     });
-    return { ok: true, sections: parseMarkers(extractText(res), ['STRATEGY']) };
+    return { ok: true, sections: parseMarkers(extractText(res), ['STRATEGY']), model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -208,11 +216,11 @@ Using the sales context above, produce three condensed sections for a presales p
 (a neutral reflection space for genuine ambiguity, a tentative hunch, or anything that doesn't cleanly fit elsewhere. This may be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1500
     });
-    return { ok: true, sections: parseMarkers(extractText(res), ['SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER']) };
+    return { ok: true, sections: parseMarkers(extractText(res), ['SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER']), model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -255,11 +263,11 @@ Produce five sections, each a short bulleted list of 3-5 specific questions, fol
 (questions that move toward next steps — gauge interest, timeline, who else needs to be involved)`;
 
     const res = await callClaude({
-      system: methodologyContext,
+      system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 1400
     });
-    return { ok: true, sections: parseMarkers(extractText(res), ['SITUATIONAL_QUESTIONS', 'PROBLEM_QUESTIONS', 'IMPLICATION_QUESTIONS', 'NEED_PAYOFF_QUESTIONS', 'CLOSING_QUESTIONS']) };
+    return { ok: true, sections: parseMarkers(extractText(res), ['SITUATIONAL_QUESTIONS', 'PROBLEM_QUESTIONS', 'IMPLICATION_QUESTIONS', 'NEED_PAYOFF_QUESTIONS', 'CLOSING_QUESTIONS']), model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
@@ -353,6 +361,18 @@ exports.handler = async function (event) {
     const results = [factsResult, strategyResult, digestResult, spinResult].map((r) =>
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
+
+    // Log real usage for every section that actually ran, regardless of
+    // whether it succeeded or failed downstream (a failed parse after a
+    // successful, billed API call still cost real money and should be
+    // logged) — only skip logging if the call itself never returned
+    // usage data at all (e.g. it threw before Anthropic responded).
+    const sectionNames = ['facts', 'strategy', 'digest', 'spin'];
+    await Promise.all(results.map((r, i) =>
+      r.usage
+        ? logApiUsage({ member_id: member.id, report_id, function_name: 'presales-generate-background', action: sectionNames[i], model: r.model, claudeResponse: { usage: r.usage } })
+        : Promise.resolve()
+    ));
 
     if (results.every((r) => !r.ok)) {
       await supaPatch(`reports?id=eq.${report_id}`, {
