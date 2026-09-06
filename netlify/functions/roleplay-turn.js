@@ -1,4 +1,17 @@
 // PREPDO — roleplay-turn.js
+// BUILD 28 | 2026-09-06
+// Added prompt caching and real usage tracking. Real, honest note on
+// scope: this file deliberately does NOT load lmi-context.md (see the
+// unchanged note below on why) — so this is NOT the ~21K-token caching
+// win the cost discussion assumed for roleplay generally. What IS
+// genuinely cacheable here: the full built system prompt (persona,
+// scenario, grounding) stays byte-identical across every turn within
+// one session, since it's built once from the same source data each
+// time — a smaller-scale but real win across sequential turns, where
+// (unlike parallel calls elsewhere) there's no cache-write-propagation
+// race condition to worry about, since each turn only starts once the
+// previous one's response has already been received.
+//
 // BUILD 27 | 2026-08-11
 // New file. Handles one exchange in a live roleplay: takes the
 // salesperson's message, generates the prospect persona's in-character
@@ -18,7 +31,7 @@
 // parallel sub-calls) — comfortably within Netlify's normal limits, no
 // async start/background/poll pattern needed for a single turn.
 
-const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions } = require('./_lib.js');
 
 function buildPersonaSystemPrompt(scenario, prospectSnapshot, presalesContext) {
   const personaLines = scenario.personas.map(p => `- ${p.label}: ${p.role_hint}`).join('\n');
@@ -121,10 +134,11 @@ exports.handler = async function (event) {
     claudeMessages.push({ role: 'user', content: message });
 
     const res = await callClaude({
-      system: systemPrompt,
+      system: buildCacheableSystem(systemPrompt),
       messages: claudeMessages,
       max_tokens: 800
     });
+    await logApiUsage({ member_id: member.id, report_id, function_name: 'roleplay-turn', action: 'live_turn', model: res.model, claudeResponse: res });
     const aiResponse = extractText(res);
 
     const now = new Date().toISOString();
