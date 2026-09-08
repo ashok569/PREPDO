@@ -1,6 +1,3 @@
-### `presales-research.js` — Build 8
-
-```javascript
 // PREPDO — presales-research.js
 // BUILD 8 | 2026-09-06
 // Added real usage tracking (no caching here — each topic's search
@@ -187,4 +184,3 @@ exports.handler = async function (event) {
     return respond(500, { ok: false, message: 'Server error: ' + err.message });
   }
 };
-```
