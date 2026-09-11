@@ -1,4 +1,17 @@
 // PREPDO — presales-generate-background.js
+// BUILD 43 | 2026-09-11
+// Real correction to Build 42's own reasoning, found via a fresh test
+// report: generateStrategy() was left unchanged on the assumption that
+// a single section (not sharing a token budget with siblings) was
+// lower-risk. That assumption was incomplete — the Strategy section's
+// OWN narrative length scales with how much richer Guided Research's
+// input is, independent of budget-sharing, and it hit the exact same
+// truncation pattern (cut off mid-sentence in "Probing Questions").
+// Bumped 2200->3000. Confirmed via the same fresh test that Build 42's
+// three fixes (generateFacts, generateDigest, generateSpin) all hold —
+// Assumptions, Points to Ponder, and Closing Questions all completed
+// cleanly this time.
+//
 // BUILD 42 | 2026-09-11
 // Real bug found and fixed: a report generated from Guided Research
 // showed a section ("Assumptions") cut off mid-sentence. Traced
@@ -208,7 +221,7 @@ Respond with EXACTLY this top-level header, nothing before it or after the conte
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2200
+      max_tokens: 3000
     });
     return { ok: true, sections: parseMarkers(extractText(res), ['STRATEGY']), model: res.model, usage: res.usage };
   } catch (err) {
