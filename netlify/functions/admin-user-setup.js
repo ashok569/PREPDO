@@ -1,5 +1,14 @@
 // PREPDO — admin-user-setup.js
-// BUILD 1 | 2026-09-11
+// BUILD 2 | 2026-09-11
+// Real UX fix, per direct feedback: the create-user response used to
+// tell the new user to open DevTools Console and run a raw JS
+// command to set localStorage — a genuinely bad first experience for
+// someone who isn't a developer. Now returns a clickable setup_url
+// (index.html?setup_token=...) instead, landing on a simple
+// "confirm your email" screen (new: redeem-setup-token.js + an
+// index.html update), with a manual email+token fallback for when
+// the link itself doesn't come through cleanly.
+//
 // New file. A proper admin-driven user/organization setup process,
 // replacing manual SQL inserts. Explicitly delinked from billing per
 // request — subscription/seat enforcement is NOT built here; a
@@ -187,11 +196,19 @@ exports.handler = async function (event) {
         session_expires_at: farFuture.toISOString()
       });
 
+      // Real UX fix, per direct feedback: the original version told
+      // the new user to open DevTools Console and run a raw JS
+      // command — a genuinely bad first experience for someone who
+      // isn't a developer. Now returns a clickable URL
+      // (index.html?setup_token=...) that lands on a simple "confirm
+      // your email" screen, handled by redeem-setup-token.js — no
+      // console, no manual localStorage command.
       return respond(200, {
         ok: true,
         member: created[0],
         setup_token: setupToken,
-        instructions: 'Share this token with the new user. They should open DevTools Console on prepdo.netlify.app and run: localStorage.setItem(\'prepdo_session\', \'<token>\'); then navigate to app.html directly.'
+        setup_url: `${process.env.URL || 'https://prepdo.netlify.app'}/index.html?setup_token=${setupToken}`,
+        instructions: 'Share this link with the new user — they just click it and confirm their email. If the link doesn\'t come through cleanly, they can also go to the login page, choose "Have an access token instead?", and enter their email plus the token below manually.'
       });
     }
 
