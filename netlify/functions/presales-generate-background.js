@@ -1,4 +1,22 @@
 // PREPDO — presales-generate-background.js
+// BUILD 42 | 2026-09-11
+// Real bug found and fixed: a report generated from Guided Research
+// showed a section ("Assumptions") cut off mid-sentence. Traced
+// directly to generateFacts() — CONFIRMED_FACTS, LIKELY_DYNAMICS, and
+// ASSUMPTIONS all share one 1200-token budget, with ASSUMPTIONS
+// written last and therefore most exposed. Guided Research can
+// legitimately produce far richer confirmed_facts input than Quick
+// Research ever did (up to 8 distinct Q&A blocks vs. 4 fixed topics),
+// so a ceiling that was fine for the smaller input is now genuinely at
+// risk with the larger one. Bumped generateFacts 1200->2000. Applied
+// the same fix to generateDigest (1500->2200 — same pattern: 3
+// sections sharing one budget, POINTS_TO_PONDER written last) and
+// generateSpin (1400->1800 — 5 sections, shorter bullet-style content
+// so lower risk per section, but more sections sharing the total).
+// generateStrategy left unchanged — it's a single section, not
+// competing with others for the same budget, so it doesn't share this
+// specific failure pattern.
+//
 // BUILD 41 | 2026-09-06
 // Added prompt caching (the STRATEGY/DIGEST/SPIN calls all embed the
 // same, large METHODOLOGY_CONTEXT — a genuine, if PARALLEL-call,
@@ -159,7 +177,7 @@ Produce three sections for a presales prep report. Respond with EXACTLY these ma
     const res = await callClaude({
       model: 'claude-haiku-4-5-20251001',
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1200
+      max_tokens: 2000
     });
     return { ok: true, sections: parseMarkers(extractText(res), ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS']), model: res.model, usage: res.usage };
   } catch (err) {
@@ -218,7 +236,7 @@ Using the sales context above, produce three condensed sections for a presales p
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1500
+      max_tokens: 2200
     });
     return { ok: true, sections: parseMarkers(extractText(res), ['SUMMARY', 'KEY_THINGS', 'POINTS_TO_PONDER']), model: res.model, usage: res.usage };
   } catch (err) {
@@ -265,7 +283,7 @@ Produce five sections, each a short bulleted list of 3-5 specific questions, fol
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1400
+      max_tokens: 1800
     });
     return { ok: true, sections: parseMarkers(extractText(res), ['SITUATIONAL_QUESTIONS', 'PROBLEM_QUESTIONS', 'IMPLICATION_QUESTIONS', 'NEED_PAYOFF_QUESTIONS', 'CLOSING_QUESTIONS']), model: res.model, usage: res.usage };
   } catch (err) {
