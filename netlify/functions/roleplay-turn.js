@@ -1,4 +1,10 @@
 // PREPDO — roleplay-turn.js
+// BUILD 29 | 2026-09-06
+// Replaced the admin-scope check with the new shared isInScope() from
+// _lib.js — same tier-rework fix as prospects.js. select=* already
+// includes organization_id once migration_v18.sql has run, so no
+// query change needed here, just the check itself.
+//
 // BUILD 28 | 2026-09-06
 // Added prompt caching and real usage tracking. Real, honest note on
 // scope: this file deliberately does NOT load lmi-context.md (see the
@@ -31,7 +37,7 @@
 // parallel sub-calls) — comfortably within Netlify's normal limits, no
 // async start/background/poll pattern needed for a single turn.
 
-const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
 
 function buildPersonaSystemPrompt(scenario, prospectSnapshot, presalesContext) {
   const personaLines = scenario.personas.map(p => `- ${p.label}: ${p.role_hint}`).join('\n');
@@ -107,7 +113,7 @@ exports.handler = async function (event) {
       return respond(404, { ok: false, message: 'Roleplay session not found.' });
     }
     const report = rows[0];
-    if (member.key_type !== 'admin' && report.owner_id !== member.id) {
+    if (!isInScope(member, report)) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
 
