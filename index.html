@@ -1,6 +1,21 @@
 <!DOCTYPE html>
 <!--
   PREPDO — index.html
+  BUILD 5 | 2026-09-11
+  Real UX fix, per direct feedback: admin-user-setup.js used to tell a
+  brand-new user to open DevTools Console and run a raw JS command to
+  set localStorage — a genuinely bad first experience for someone who
+  isn't a developer. This adds two friendlier paths, both calling the
+  new redeem-setup-token.js:
+  1. A clickable setup link (index.html?setup_token=...) — lands on a
+     simple "confirm your email" screen, no console needed.
+  2. A manual fallback ("Have an access token instead?" on the default
+     login screen) — email + token typed in directly, for when the
+     link itself doesn't come through cleanly.
+  Both require email + token together (not just the token alone) —
+  binds redemption to who it was actually issued for, a real security
+  improvement over the token alone being fully equivalent to a session.
+
   BUILD 4 | 2026-08-11
   (Header comment was stale — said Build 3 despite the favicon and
   copyright footer already being added. Fixed while assembling the
@@ -58,12 +73,12 @@
     display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.5px;
     text-transform: uppercase; color: var(--ink-soft); margin-bottom: 8px;
   }
-  input[type="email"] {
+  input[type="email"], input[type="text"] {
     width: 100%; padding: 12px 14px; font-size: 15px;
     border: 1px solid var(--line); border-radius: 3px;
     background: var(--paper); color: var(--ink);
   }
-  input[type="email"]:focus {
+  input[type="email"]:focus, input[type="text"]:focus {
     outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
   }
   button {
@@ -81,6 +96,9 @@
   .spinner-msg { text-align: center; color: var(--ink-soft); font-size: 14px; }
   .welcome { text-align: center; }
   .welcome .name { font-size: 20px; font-weight: 700; margin-bottom: 8px; }
+  .field-hint { font-size: 12px; color: var(--ink-soft); margin-top: -12px; margin-bottom: 16px; }
+  .text-link { display: block; text-align: center; margin-top: 18px; font-size: 13px; color: var(--ink-soft); cursor: pointer; text-decoration: underline; }
+  .text-link:hover { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -107,6 +125,31 @@
       <button type="submit">Email me a login link</button>
       <div class="status" id="requestStatus"></div>
     </form>
+    <span id="showManualTokenLink" class="text-link hidden">Have an access token instead?</span>
+
+    <!-- Clicked a setup link (index.html?setup_token=...) — token is
+         already known from the URL, just needs the email it was
+         issued for. -->
+    <form id="setupTokenConfirmForm" class="hidden">
+      <label for="setupConfirmEmail">Confirm Your Email</label>
+      <input type="email" id="setupConfirmEmail" name="email" placeholder="you@company.com" autocomplete="email" required>
+      <div class="field-hint">This should be the email your admin set your account up with.</div>
+      <button type="submit">Activate My Account</button>
+      <div class="status" id="setupConfirmStatus"></div>
+    </form>
+
+    <!-- Manual fallback — for when the link itself didn't come
+         through cleanly. Same underlying redemption as above, both
+         fields typed in directly. -->
+    <form id="manualTokenForm" class="hidden">
+      <label for="manualTokenEmail">Email</label>
+      <input type="email" id="manualTokenEmail" name="email" placeholder="you@company.com" autocomplete="email" required>
+      <label for="manualTokenInput" style="margin-top:14px;">Access Token</label>
+      <input type="text" id="manualTokenInput" name="token" placeholder="Paste the token you were given" required>
+      <button type="submit">Activate My Account</button>
+      <div class="status" id="manualTokenStatus"></div>
+    </form>
+    <span id="backToLoginLink" class="text-link hidden">&larr; Back to login</span>
 
     <div class="footer-note">&copy; Ashok Thussu, All rights reserved &middot; PREPDO v2.0</div>
   </div>
@@ -115,8 +158,13 @@
   const API = '/.netlify/functions';
   const $ = (id) => document.getElementById(id);
 
+  const ALL_SCREENS = ['checking', 'welcomeScreen', 'requestLinkForm', 'setupTokenConfirmForm', 'manualTokenForm'];
+
   function showOnly(id) {
-    ['checking', 'welcomeScreen', 'requestLinkForm'].forEach(x => $(x).classList.toggle('hidden', x !== id));
+    ALL_SCREENS.forEach(x => $(x).classList.toggle('hidden', x !== id));
+    // The two text-links only make sense alongside their matching form.
+    $('showManualTokenLink').classList.toggle('hidden', id !== 'requestLinkForm');
+    $('backToLoginLink').classList.toggle('hidden', id !== 'manualTokenForm');
   }
 
   function showWelcome(name) {
@@ -167,14 +215,51 @@
     }
   }
 
-  // Entry point: figure out which of the three states we're in.
+  // Shared by both the setup-link confirm form and the manual
+  // fallback form — same underlying call, same result handling.
+  async function redeemSetupToken(email, token, statusEl) {
+    statusEl.textContent = 'Checking...';
+    statusEl.className = 'status';
+    try {
+      const res = await fetch(`${API}/redeem-setup-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, token })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        localStorage.setItem('prepdo_session', data.session_token);
+        statusEl.textContent = 'Success — taking you in...';
+        statusEl.className = 'status success';
+        showWelcome();
+      } else {
+        statusEl.textContent = data.message || 'That email and token don\'t match.';
+        statusEl.className = 'status error';
+      }
+    } catch (err) {
+      statusEl.textContent = 'Something went wrong — please try again.';
+      statusEl.className = 'status error';
+    }
+  }
+
+  let pendingSetupToken = null;
+
+  // Entry point: figure out which of the states we're in.
   (async function init() {
     const params = new URLSearchParams(window.location.search);
     const activateToken = params.get('activate');
     const loginToken = params.get('login');
+    const setupToken = params.get('setup_token');
     const storedSession = localStorage.getItem('prepdo_session');
 
-    if (activateToken) {
+    if (setupToken) {
+      // Deliberately does NOT auto-process like activate/login tokens
+      // do — redemption needs the user's email too, so this always
+      // stops at the confirm screen rather than silently trying.
+      pendingSetupToken = setupToken;
+      window.history.replaceState({}, '', window.location.pathname);
+      showOnly('setupTokenConfirmForm');
+    } else if (activateToken) {
       showOnly('checking');
       await activate(activateToken);
     } else if (loginToken) {
@@ -209,6 +294,27 @@
       statusEl.textContent = 'Something went wrong — please try again.';
       statusEl.className = 'status error';
     }
+  });
+
+  $('setupTokenConfirmForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const email = $('setupConfirmEmail').value.trim();
+    redeemSetupToken(email, pendingSetupToken, $('setupConfirmStatus'));
+  });
+
+  $('manualTokenForm').addEventListener('submit', function (e) {
+    e.preventDefault();
+    const email = $('manualTokenEmail').value.trim();
+    const token = $('manualTokenInput').value.trim();
+    redeemSetupToken(email, token, $('manualTokenStatus'));
+  });
+
+  $('showManualTokenLink').addEventListener('click', () => {
+    showOnly('manualTokenForm');
+  });
+
+  $('backToLoginLink').addEventListener('click', () => {
+    showOnly('requestLinkForm');
   });
 </script>
 
