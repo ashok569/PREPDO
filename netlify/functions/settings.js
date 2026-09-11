@@ -1,4 +1,13 @@
 // PREPDO — settings.js
+// BUILD 52 | 2026-09-11
+// Real gap found via a direct backup-file inspection after today's
+// deploy: the 3 new tables from migration_v18.sql/v19.sql
+// (organizations, subscriptions, report_backups) were never added to
+// the export-all-data table list, despite existing and working
+// correctly (confirmed directly — the same backup that revealed the
+// gap also confirmed the tier rework and organization_id backfill had
+// landed correctly). Added all 3.
+//
 // BUILD 51 | 2026-09-06
 // Updated all 4 admin checks from 'admin' to 'platform_admin' — these
 // are genuine platform-wide tool-access checks (Industry Library,
@@ -192,7 +201,7 @@ exports.handler = async function (event) {
       if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
-      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log'];
+      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log', 'organizations', 'subscriptions', 'report_backups'];
       const dump = { exported_at: new Date().toISOString(), tables: {} };
       for (const table of tables) {
         try {
