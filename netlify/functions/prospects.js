@@ -1,4 +1,15 @@
 // PREPDO — prospects.js
+// BUILD 16 | 2026-09-06
+// Replaced all 5 admin-scope checks (2 list-query scopes, 3 single-
+// record ownership checks) with the new shared getScopeFilter()/
+// isInScope() from _lib.js — same real gap fix as everywhere else in
+// this pass: these were previously binary ("my own" vs. "everyone,
+// across every org"), with no way for an org_admin to see their own
+// org's prospects without seeing every other org's too. The 3 single-
+// record checks also needed their own select clauses widened to
+// include organization_id — isInScope can't evaluate org-level scope
+// on a record it was never given that column for.
+//
 // BUILD 15 | 2026-08-29
 // Added 'list-my-roleplays' — lists ALL roleplay reports, standalone
 // and prospect-tied alike, for the new Roleplay History view.
@@ -35,7 +46,7 @@
 //
 // Request body always includes { session_token, action, ...fields }
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope } = require('./_lib.js');
 
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
@@ -59,7 +70,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'list') {
-      const scope = member.key_type === 'admin' ? '' : `&owner_id=eq.${member.id}`;
+      const scope = getScopeFilter(member);
       const archivedValue = payload.archived ? 'true' : 'false';
       // folder_id filtering (BUILD 32): omit entirely for "All
       // Prospects" (default, unfiltered by folder), pass a real folder
@@ -76,17 +87,15 @@ exports.handler = async function (event) {
     }
 
     if (action === 'list-my-roleplays') {
-      // BUILD 15: standalone roleplays (prospect_id null — the not-null
-      // constraint on it was dropped via a standalone SQL command
-      // given directly, not a numbered migration file) have no
-      // prospect page to attach to — they were genuinely invisible
-      // anywhere after the session ended. This lists EVERY roleplay
-      // report, standalone and prospect-tied alike, for the new
-      // dedicated Roleplay History view. Embeds the linked prospect's
-      // company/contact name via PostgREST's foreign-table syntax
-      // where one exists; comes back null for standalone sessions,
-      // handled on the frontend.
-      const scope = member.key_type === 'admin' ? '' : `&owner_id=eq.${member.id}`;
+      // BUILD 15: standalone roleplays (prospect_id null, migration_v15
+      // dropped the not-null constraint on it) have no prospect page to
+      // attach to — they were genuinely invisible anywhere after the
+      // session ended. This lists EVERY roleplay report, standalone and
+      // prospect-tied alike, for the new dedicated Roleplay History
+      // view. Embeds the linked prospect's company/contact name via
+      // PostgREST's foreign-table syntax where one exists; comes back
+      // null for standalone sessions, handled on the frontend.
+      const scope = getScopeFilter(member);
       const rows = await supaGet(`reports?report_type=eq.role_play&select=*,prospects(company_name,prospect_name)${scope}&order=created_at.desc`);
       return respond(200, { ok: true, roleplays: rows });
     }
@@ -130,9 +139,9 @@ exports.handler = async function (event) {
       const { prospect_id } = payload;
       if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
 
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id`);
+      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (member.key_type !== 'admin' && existing[0].owner_id !== member.id) {
+      if (!isInScope(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -144,9 +153,9 @@ exports.handler = async function (event) {
       const { prospect_id, folder_id } = payload; // folder_id may be null (un-file)
       if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
 
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id`);
+      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (member.key_type !== 'admin' && existing[0].owner_id !== member.id) {
+      if (!isInScope(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -168,9 +177,9 @@ exports.handler = async function (event) {
       const { prospect_id } = payload;
       if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
 
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id`);
+      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (member.key_type !== 'admin' && existing[0].owner_id !== member.id) {
+      if (!isInScope(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
