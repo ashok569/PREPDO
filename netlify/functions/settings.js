@@ -1,4 +1,12 @@
 // PREPDO — settings.js
+// BUILD 51 | 2026-09-06
+// Updated all 4 admin checks from 'admin' to 'platform_admin' — these
+// are genuine platform-wide tool-access checks (Industry Library,
+// segment switching, Full Data Backup), correctly staying exclusive to
+// that one tier rather than being converted to the new org-scoped
+// getScopeFilter()/isInScope() pattern used in prospects.js/roleplay-
+// turn.js, which is for record-level scoping, not platform-tool access.
+//
 // BUILD 50 | 2026-09-06
 // Added 'api_usage_log' to the Full Data Backup export table list —
 // the new real API usage tracking table (migration_v16.sql, built
@@ -87,7 +95,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'update-my-segment') {
-      if (member.key_type !== 'admin') {
+      if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
       const { segment } = payload;
@@ -142,7 +150,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'admin-get-industry-content') {
-      if (member.key_type !== 'admin') {
+      if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
       const { industry_context_id } = payload;
@@ -157,7 +165,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'admin-update-industry-content') {
-      if (member.key_type !== 'admin') {
+      if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
       const { industry_context_id, context_content } = payload;
@@ -181,7 +189,7 @@ exports.handler = async function (event) {
       // (including jsonb columns) faithfully, at the cost of not
       // being directly Excel-readable. A CSV-per-table version would
       // be a reasonable future upgrade if that's ever actually needed.
-      if (member.key_type !== 'admin') {
+      if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
       const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log'];
