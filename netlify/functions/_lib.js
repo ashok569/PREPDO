@@ -1,4 +1,19 @@
 // PREPDO — _lib.js
+// BUILD 24 | 2026-09-06
+// Added getScopeFilter() and isInScope() — the real fix for a gap
+// found during a direct audit of every admin check in the codebase:
+// every single one was binary ("my own records" vs. "literally
+// everyone's, across every org"), with no middle tier for "everyone
+// in my own org only" — meaning org_admin couldn't safely exist until
+// this closed. One shared rule now, reused everywhere, instead of the
+// same admin check hand-written separately across multiple files.
+// Verified both functions directly against every realistic tier
+// combination (platform_admin, org_admin with/without an org set,
+// institutional_admin, member) before applying them anywhere —
+// confirmed exactly the expected filter/boolean in each case,
+// including the security-critical one: an org_admin correctly gets
+// rejected from a different org's record.
+//
 // BUILD 23 | 2026-09-06
 // Added prompt caching support and real API usage tracking, built
 // together from day one per explicit request — tracking exists
@@ -339,6 +354,48 @@ async function logApiUsage({ member_id, report_id, function_name, action, model,
   }
 }
 
+// Returns a PostgREST filter fragment (starting with `&`, or an empty
+// string) scoping a query to what the given member is allowed to see —
+// one shared rule, reused everywhere, instead of the same "am I an
+// admin" check hand-written separately in multiple files (the exact
+// duplication that let the tier rework's real gap go unnoticed: every
+// admin check across prospects.js/roleplay-turn.js was binary — "my
+// own records" vs. "literally everyone's, across every org" — with no
+// middle tier for "everyone in my own org only").
+//
+// platform_admin: unrestricted, no filter at all.
+// org_admin: scoped to their own organization — uses organization_id
+// directly (denormalized onto prospects/reports in migration_v18.sql),
+// deliberately NOT an `owner_id=in.(...)` filter built from a separate
+// lookup of every member in the org. That pattern was considered and
+// rejected for the same real reason the Gleaner's report-exclusion
+// logic avoided it (see gleaner-generate-background.js Build 3): a
+// filter that grows with org size becomes an increasingly long,
+// increasingly fragile URL string over time. A direct, indexed column
+// doesn't have that problem.
+// Everyone else (org_admin with no organization_id set, institutional_
+// admin, member): falls back to their own records only.
+function getScopeFilter(member, ownerColumn = 'owner_id') {
+  if (member.key_type === 'platform_admin') return '';
+  if (member.key_type === 'org_admin' && member.organization_id) {
+    return `&organization_id=eq.${member.organization_id}`;
+  }
+  return `&${ownerColumn}=eq.${member.id}`;
+}
+
+// Same underlying question as getScopeFilter, but for a single
+// already-fetched record rather than a list query: is this member
+// allowed to act on it? Takes the record's own organization_id (or,
+// if the record doesn't carry one directly, falls back to comparing
+// owner_id) rather than re-deriving scope from a filter string.
+function isInScope(member, record, ownerColumn = 'owner_id') {
+  if (member.key_type === 'platform_admin') return true;
+  if (member.key_type === 'org_admin' && member.organization_id) {
+    return record.organization_id === member.organization_id;
+  }
+  return record[ownerColumn] === member.id;
+}
+
 module.exports = {
   supaGet, supaPost, supaPatch, supaDelete,
   generateToken, hashToken,
@@ -346,5 +403,6 @@ module.exports = {
   computeSubscriptionFields,
   getMemberFromSession,
   callClaude, extractText,
-  buildCacheableSystem, logApiUsage
+  buildCacheableSystem, logApiUsage,
+  getScopeFilter, isInScope
 };
