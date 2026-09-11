@@ -1,4 +1,9 @@
 // PREPDO — gleaner.js
+// BUILD 2 | 2026-09-06
+// Updated the admin check from 'admin' to 'platform_admin' — genuinely
+// platform-wide (reads across every org's reports), correctly staying
+// exclusive to that one tier.
+//
 // BUILD 1 | 2026-09-06
 // New file. Action-routed endpoint for the Gleaner admin UI: 'list'
 // (history of past runs, for the list view), 'get' (one full run,
@@ -29,7 +34,7 @@ exports.handler = async function (event) {
     if (!member) {
       return respond(401, { ok: false, message: 'Not logged in. Please log in again.' });
     }
-    if (member.key_type !== 'admin') {
+    if (member.key_type !== 'platform_admin') {
       return respond(403, { ok: false, message: 'The Gleaner is an admin-only tool.' });
     }
 
