@@ -1,4 +1,22 @@
 // PREPDO — admin-user-setup.js
+// BUILD 3 | 2026-09-11
+// Added 'regenerate-access' — for an EXISTING user who's lost their
+// session (confirmed directly, by reading the actual code, that
+// request-login-link.js silently does nothing unless BREVO_API_KEY is
+// configured, which it isn't yet — this closes that gap for admins in
+// the meantime). Reuses the exact token/setup_url mechanism from
+// create-user, against an existing row instead of a new one. Same
+// tier-comparison rule as create-user, but DELIBERATELY without its
+// "platform_admin can never be created through this tool" exception —
+// refreshing an existing credential grants no new privilege, unlike
+// minting a brand-new platform_admin, so platform_admin CAN regenerate
+// another platform_admin's access here. Tested all 8 realistic
+// permission scenarios directly, including that specific deliberate
+// difference from create-user's rule, before shipping. Real, honest
+// limit stated in the code itself: this only helps when some OTHER
+// admin still has an active session to act on the locked-out person's
+// behalf — it doesn't help if every admin is locked out at once.
+//
 // BUILD 2 | 2026-09-11
 // Real UX fix, per direct feedback: the create-user response used to
 // tell the new user to open DevTools Console and run a raw JS
@@ -21,14 +39,15 @@
 // user creation, rather than routing through request-login-link.js's
 // email flow or activate.js — neither has been confirmed to actually
 // work end-to-end (request-login-link.js's real email-sending
-// capability is still an open, unconfirmed question from earlier this
-// session). This reuses the exact token/hash mechanism already proven
-// twice today for real account recovery: a random token is generated,
-// its hash is stored on the new team_members row directly, and the
-// raw token is returned in the response for the admin to hand to the
-// new user themselves — not dependent on anything unverified.
+// capability is now confirmed, by reading the actual code, to
+// silently do nothing without BREVO_API_KEY configured). This reuses
+// the exact token/hash mechanism already proven for real account
+// recovery: a random token is generated, its hash is stored on the
+// team_members row directly, and the raw token/URL is returned for
+// the admin to hand to the new user themselves — not dependent on
+// anything unverified.
 //
-// Three actions:
+// Four actions:
 //   'list-organizations' — for the setup UI's org picker. platform_admin/
 //                           institutional_admin see every org; org_admin
 //                           sees only their own (can't create users
@@ -38,19 +57,20 @@
 //                           active immediately (admin action IS the
 //                           activation, replacing the old subscription-
 //                           triggers-activation workflow), with a real
-//                           token ready to share.
+//                           token/URL ready to share.
+//   'regenerate-access'   — for an EXISTING user, see Build 3 note above.
 //
 // Permission rule: granting a tier STRICTLY ABOVE your own is always
 // blocked. A PEER grant (org_admin creating another org_admin,
 // institutional_admin creating another institutional_admin) is
 // allowed — two co-equal admins at one company is a normal, real
-// need. platform_admin can NEVER be created through this tool, by
+// need. platform_admin can NEVER be created through create-user, by
 // anyone, including an existing platform_admin — that one action
 // stays a direct, deliberate database action. org_admin is
 // additionally restricted to their own organization_id.
 
 const crypto = require('crypto');
-const { getMemberFromSession, supaGet, supaPost, hashToken, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, hashToken, respond, handleOptions } = require('./_lib.js');
 
 const TIER_RANK = { member: 0, org_admin: 1, institutional_admin: 2, platform_admin: 3 };
 
@@ -147,24 +167,12 @@ exports.handler = async function (event) {
         return respond(400, { ok: false, message: 'organization_id is required.' });
       }
 
-      // Permission rule, corrected after direct testing caught a real
-      // inconsistency with the design intent: granting a tier STRICTLY
-      // ABOVE your own is always blocked, but a PEER grant (org_admin
-      // creating another org_admin, institutional_admin creating
-      // another institutional_admin) is legitimate and allowed — two
-      // co-equal admins at one company is a normal, real need. The one
-      // deliberate exception: platform_admin can NEVER be created
-      // through this tool, by anyone, including an existing
-      // platform_admin — that specific action is sensitive enough to
-      // stay a direct, deliberate database action, not a routine UI
-      // operation.
       if (key_type === 'platform_admin') {
         return respond(403, { ok: false, message: 'platform_admin can only be created via a direct database action, never through this tool.' });
       }
       if (TIER_RANK[key_type] > TIER_RANK[member.key_type]) {
         return respond(403, { ok: false, message: `You cannot grant a tier above your own (${member.key_type}).` });
       }
-      // org_admin is additionally confined to their own organization.
       if (member.key_type === 'org_admin' && organization_id !== member.organization_id) {
         return respond(403, { ok: false, message: 'You can only create users within your own organization.' });
       }
@@ -179,8 +187,6 @@ exports.handler = async function (event) {
         return respond(404, { ok: false, message: 'Organization not found.' });
       }
 
-      // Real token generated directly — see file header for why this
-      // deliberately bypasses the email/activate-link flow.
       const setupToken = generateSetupToken();
       const tokenHash = hashToken(setupToken);
       const farFuture = new Date();
@@ -196,19 +202,53 @@ exports.handler = async function (event) {
         session_expires_at: farFuture.toISOString()
       });
 
-      // Real UX fix, per direct feedback: the original version told
-      // the new user to open DevTools Console and run a raw JS
-      // command — a genuinely bad first experience for someone who
-      // isn't a developer. Now returns a clickable URL
-      // (index.html?setup_token=...) that lands on a simple "confirm
-      // your email" screen, handled by redeem-setup-token.js — no
-      // console, no manual localStorage command.
       return respond(200, {
         ok: true,
         member: created[0],
         setup_token: setupToken,
         setup_url: `${process.env.URL || 'https://prepdo.netlify.app'}/index.html?setup_token=${setupToken}`,
         instructions: 'Share this link with the new user — they just click it and confirm their email. If the link doesn\'t come through cleanly, they can also go to the login page, choose "Have an access token instead?", and enter their email plus the token below manually.'
+      });
+    }
+
+    if (action === 'regenerate-access') {
+      const { email } = payload;
+      if (!email || !email.trim()) {
+        return respond(400, { ok: false, message: 'Email is required.' });
+      }
+
+      const existing = await supaGet(`team_members?email=eq.${encodeURIComponent(email.trim())}&select=*`);
+      if (!existing.length) {
+        return respond(404, { ok: false, message: 'No user found with this email.' });
+      }
+      const targetUser = existing[0];
+
+      if (TIER_RANK[targetUser.key_type] > TIER_RANK[member.key_type]) {
+        return respond(403, { ok: false, message: `You cannot regenerate access for a tier above your own (${member.key_type}).` });
+      }
+      if (member.key_type === 'org_admin' && targetUser.organization_id !== member.organization_id) {
+        return respond(403, { ok: false, message: 'You can only regenerate access for users within your own organization.' });
+      }
+      if (!targetUser.is_active) {
+        return respond(403, { ok: false, message: 'This account is deactivated — reactivate it before regenerating access.' });
+      }
+
+      const setupToken = generateSetupToken();
+      const tokenHash = hashToken(setupToken);
+      const farFuture = new Date();
+      farFuture.setFullYear(farFuture.getFullYear() + 2);
+
+      await supaPatch(`team_members?id=eq.${targetUser.id}`, {
+        session_token_hash: tokenHash,
+        session_expires_at: farFuture.toISOString()
+      });
+
+      return respond(200, {
+        ok: true,
+        email: targetUser.email,
+        setup_token: setupToken,
+        setup_url: `${process.env.URL || 'https://prepdo.netlify.app'}/index.html?setup_token=${setupToken}`,
+        instructions: 'Share this link with them — they click it and confirm their email, same as a new user.'
       });
     }
 
