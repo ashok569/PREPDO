@@ -1,5 +1,24 @@
 // PREPDO — roleplay-turn.js
-// BUILD 29 | 2026-09-06
+// BUILD 30 | 2026-09-11
+// Real gap fix, found while scoping the KBR Doer-Seller industry
+// document: industry_context_id's content previously only fed the
+// debrief step (roleplay-debrief-background.js) — never the LIVE
+// persona itself, meaning selecting an industry never actually
+// changed how the roleplay character behaved during the conversation,
+// only how it got scored afterward. Now fetched the same way
+// presales-generate-background.js/meeting-analysis-background.js
+// already do, and passed into the persona prompt as grounding for the
+// PERSONA'S OWN world (realistic buyer types, business situations,
+// problems for that industry) — deliberately never framed as
+// methodology guidance the character is aware of, staying consistent
+// with the existing rule that the persona must never reference or
+// acknowledge any sales technique. Tested the conditional logic
+// directly: LMI users and Non-LMI users with no industry selected are
+// completely unaffected (empty block, byte-identical prompt to
+// before); only a Non-LMI user with an industry selected sees the
+// addition.
+//
+// BUILD 29 | 2026-09-11
 // Replaced the admin-scope check with the new shared isInScope() from
 // _lib.js — same tier-rework fix as prospects.js. select=* already
 // includes organization_id once migration_v18.sql has run, so no
@@ -39,7 +58,7 @@
 
 const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
 
-function buildPersonaSystemPrompt(scenario, prospectSnapshot, presalesContext) {
+function buildPersonaSystemPrompt(scenario, prospectSnapshot, presalesContext, industryContext) {
   const personaLines = scenario.personas.map(p => `- ${p.label}: ${p.role_hint}`).join('\n');
   const multiPersona = scenario.personas.length > 1;
 
@@ -62,13 +81,27 @@ ${presalesContext.ai_output_detailed || '(none)'}`;
 Invent a plausible, SPECIFIC company and persona consistent with this description — a real-sounding name, headcount, location detail, industry specifics, management structure. Stay consistent with whatever you invent for the rest of the conversation.`;
   }
 
+  // Real gap fix: industry_context_id's content previously fed only
+  // the debrief step, never the live persona itself — meaning
+  // selecting an industry never actually changed how the roleplay
+  // character behaved during the conversation, only how it got scored
+  // afterward. This is deliberately framed as grounding for the
+  // PERSONA'S OWN world (what problems, buyer types, and business
+  // situations are realistic for someone like this), never as
+  // methodology guidance — the character must never become aware it's
+  // "supposed to" raise certain problems or represent a certain buyer
+  // type; it should simply BE a realistic person from that world.
+  const industryBlock = industryContext
+    ? `\n\nINDUSTRY GROUNDING (use this to make your character's business situation, priorities, and language authentic and specific to this world — this describes what's realistic for someone like you, not a script to follow. Never reference or acknowledge this information directly; simply BE a person whose business and concerns are genuinely shaped by it):\n${industryContext}`
+    : '';
+
   const difficultyBlock = scenario.difficulty === 'tough'
     ? `DIFFICULTY: Tough. Raise real objections. Be genuinely skeptical of vague claims — push for specifics. Don't make this easy; a competent salesperson should have to work for genuine progress. Still realistic, not cartoonishly hostile.`
     : `DIFFICULTY: Supportive. Curious and generally open, but still a real, busy person — don't just agree with everything; ask reasonable questions, but don't manufacture resistance either.`;
 
   return `You are role-playing a live sales meeting for practice purposes. You play the PROSPECT side of the conversation — the salesperson practicing is a real person typing real messages to you.
 
-${groundingBlock}
+${groundingBlock}${industryBlock}
 
 PERSONA(S) YOU ARE PLAYING:
 ${personaLines}
@@ -130,7 +163,25 @@ exports.handler = async function (event) {
       if (latestPresales.length) presalesContext = latestPresales[0];
     }
 
-    const systemPrompt = buildPersonaSystemPrompt(scenario, report.structured_data?.prospect_snapshot, presalesContext);
+    // Real gap fix: industry_context_id previously never reached this
+    // function at all — only the debrief step used it. Fetched the
+    // same way presales-generate-background.js/meeting-analysis-
+    // background.js already do, so a Non-LMI user with an industry
+    // selected now gets a persona actually grounded in that industry's
+    // real buyer types and business situations, not just scored
+    // against them after the fact.
+    let industryContext = null;
+    if (member.user_segment === 'non_lmi' && member.industry_context_id) {
+      try {
+        const industryRows = await supaGet(`industry_contexts?id=eq.${member.industry_context_id}&select=context_content`);
+        if (industryRows.length) industryContext = industryRows[0].context_content;
+      } catch (e) {
+        // A failed lookup shouldn't block the roleplay turn — proceed
+        // without industry grounding rather than failing the whole call.
+      }
+    }
+
+    const systemPrompt = buildPersonaSystemPrompt(scenario, report.structured_data?.prospect_snapshot, presalesContext, industryContext);
 
     const existingConversation = report.conversation || [];
     const claudeMessages = existingConversation.map(turn => ({
