@@ -1,4 +1,12 @@
 // PREPDO — _access.js
+// BUILD 3 | 2026-09-28
+// Added tryLedger(): like recordLedger but reports failure ({ ok:false, error })
+// instead of swallowing it, so admin actions can show a warning. Found in real
+// use: the ledger table had no permission for service_role, every write failed
+// silently (by design — a ledger failure must never break the action it
+// records), and nobody could see it. recordLedger is unchanged in behaviour
+// (still never throws) and now calls tryLedger.
+//
 // BUILD 2 | 2026-09-28
 // Credits replace runs. A credit is a fixed slice of AI cost ($0.10 for now —
 // CREDIT_UNIT_USD, revisit when pricing is set). Every action has a PRICE in
@@ -92,14 +100,18 @@ function checkAccess(member, { requireFull = false, needCredits = 0 } = {}) {
 
 // Best-effort audit row; returns its id (or null). A ledger failure must never
 // break the action it records.
-async function recordLedger(row) {
+async function tryLedger(row) {
   try {
     const r = await supaPost('credit_ledger', row);
-    return r && r[0] ? r[0].id : null;
+    return { ok: true, id: r && r[0] ? r[0].id : null };
   } catch (e) {
     console.error('credit_ledger write failed (non-fatal):', e.message);
-    return null;
+    return { ok: false, id: null, error: e.message };
   }
+}
+
+async function recordLedger(row) {
+  return (await tryLedger(row)).id;
 }
 
 async function linkLedger(ledgerId, reportId) {
@@ -185,5 +197,5 @@ function describeAccess(member) {
 module.exports = {
   CREDIT_UNIT_USD, PRICES, MIN_TO_START_ROLEPLAY, FULL_CYCLE, LOW_CREDITS, round2,
   isExempt, isExpired, creditsRemaining, industryRestriction,
-  checkAccess, charge, refund, recordLedger, linkLedger, describeAccess
+  checkAccess, charge, refund, recordLedger, tryLedger, linkLedger, describeAccess
 };
