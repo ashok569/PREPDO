@@ -1,4 +1,17 @@
 // PREPDO — iterative-research.js
+// BUILD 4 | 2026-09-28
+// Starting a Guided Research session costs PRICES.guided_research credits
+// (charged at start; the later steps of the session are not charged separately
+// yet — calibrate from beta data). The balance must also cover the report that
+// follows (guided_research + report), so nobody is stranded. Refunded if every
+// starting question fails or the start errors out before a session exists.
+//
+// BUILD 3 | 2026-09-24 (run-based; never released)
+// Access control on starting a Guided Research session: roleplay-only,
+// expired, deactivated and out-of-runs accounts are refused before any AI
+// call (the 4 starting questions). Like the standard research step, it does
+// not spend a run itself — the run is spent when the report is generated.
+//
 // BUILD 2 | 2026-09-11
 // Replaced the single 'open-ask' action with 'add-aspect' (capped at
 // 2 per session, enforced server-side not just in the UI) and
@@ -54,9 +67,10 @@
 //                         exactly 2, offered once.
 //   'research-pathway'  — fires research for whichever pathway(s) the
 //                         user selected (one, both, or neither).
-//   'add-aspect'        — up to 2 per session, each checked for
-//                         redundancy first.
-//   'finish'            — compiles everything into final_compiled_facts.
+//   'open-ask'          — fires research on the user's free-text
+//                         follow-up (if given), then compiles
+//                         everything into final_compiled_facts in the
+//                         same call — no separate finalize round-trip.
 //                         The output shape matches presales-research.js's
 //                         own confirmed_facts format, so it can feed
 //                         directly into the existing Presales Prep
@@ -64,6 +78,7 @@
 //                         point there.
 
 const { getMemberFromSession, supaGet, supaPost, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
+const { checkAccess, charge, refund, PRICES } = require('./_access.js');
 
 // The 4 standardized questions — LMI set, deliberately plain language.
 function buildLmiQuestions(companyName) {
@@ -145,6 +160,11 @@ exports.handler = async function (event) {
       if (!isInScope(member, prospect)) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
+      const denied = checkAccess(member, { requireFull: true, needCredits: PRICES.guided_research + PRICES.report });
+      if (denied) return respond(denied.status, denied.body);
+      const paid = await charge(member, 'guided_research');
+      if (!paid.ok) return respond(403, { ok: false, code: paid.code, message: paid.message });
+      try {
 
       const isNonLmi = member.user_segment === 'non_lmi';
       const methodology = isNonLmi ? 'spin' : 'lmi';
@@ -171,6 +191,9 @@ exports.handler = async function (event) {
         questions.map((q) => researchQuestion(prospect.company_name, prospect.company_website, q))
       );
       const findings = results.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
+      if (findings.every((f) => !f.ok)) {
+        await refund(member, PRICES.guided_research, { note: 'every starting question failed' });
+      }
 
       await Promise.all(findings.map((f) =>
         f.usage
@@ -188,6 +211,10 @@ exports.handler = async function (event) {
       });
 
       return respond(200, { ok: true, session: created[0] });
+      } catch (startErr) {
+        await refund(member, PRICES.guided_research, { note: 'start failed: ' + startErr.message });
+        throw startErr;
+      }
     }
 
     if (action === 'get-pathways') {
