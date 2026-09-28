@@ -1,4 +1,21 @@
 // PREPDO — settings.js
+// BUILD 54 | 2026-09-28
+// Added 'credit_ledger' (migration_v22.sql) to the Full Data Backup table
+// list — the same gap Build 52 fixed for the tier tables: a new table is not
+// backed up unless it is named here.
+//
+// BUILD 53 | 2026-09-24
+// Access levels / credits / industry restrictions / roleplay language.
+// get-my-settings now returns an `access` block (plan, expiry, credits
+// remaining and prices, Full vs Roleplay-only, allowed industries, English-only) so
+// the frontend can render limits and the credit balance. list-industries is
+// filtered to the user's allowed industries (platform_admin always sees
+// all — the library editor needs the full list). select-industry and
+// research-org-context are ENFORCED here, not just hidden in the UI: a
+// user locked to an industry cannot switch it, nor use the "Other"
+// route, which would clear it. New action 'set-english-only' backs the
+// roleplay language toggle.
+//
 // BUILD 52 | 2026-09-11
 // Real gap found via a direct backup-file inspection after today's
 // deploy: the 3 new tables from migration_v18.sql/v19.sql
@@ -70,6 +87,7 @@
 // non-LMI user could never complete their own setup at all.
 
 const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions } = require('./_lib.js');
+const { describeAccess, industryRestriction } = require('./_access.js');
 
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
@@ -99,7 +117,8 @@ exports.handler = async function (event) {
         selling_company_name: member.selling_company_name,
         selling_company_website: member.selling_company_website,
         org_context_research: member.org_context_research,
-        industry_context_id: member.industry_context_id
+        industry_context_id: member.industry_context_id,
+        access: describeAccess(member)
       });
     }
 
@@ -116,7 +135,11 @@ exports.handler = async function (event) {
     }
 
     if (action === 'list-industries') {
-      const rows = await supaGet(`industry_contexts?select=id,industry_name&order=display_order.asc`);
+      // Restricted users see only the industries their administrator
+      // allowed; platform_admin (and anyone unrestricted) sees them all.
+      const allowedIds = industryRestriction(member);
+      const filter = allowedIds ? `&id=in.(${allowedIds.join(',')})` : '';
+      const rows = await supaGet(`industry_contexts?select=id,industry_name&order=display_order.asc${filter}`);
       return respond(200, { ok: true, industries: rows });
     }
 
@@ -127,6 +150,10 @@ exports.handler = async function (event) {
       }
       if (!selling_company_name || !selling_company_name.trim()) {
         return respond(400, { ok: false, message: 'Company name is required.' });
+      }
+      const allowedIds = industryRestriction(member);
+      if (allowedIds && !allowedIds.includes(industry_context_id)) {
+        return respond(403, { ok: false, message: 'That industry is not available on your account.' });
       }
       // Confirm the industry actually exists before pointing at it.
       const check = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id`);
@@ -201,7 +228,7 @@ exports.handler = async function (event) {
       if (member.key_type !== 'platform_admin') {
         return respond(403, { ok: false, message: 'Admin only.' });
       }
-      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log', 'organizations', 'subscriptions', 'report_backups'];
+      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log', 'organizations', 'subscriptions', 'report_backups', 'credit_ledger'];
       const dump = { exported_at: new Date().toISOString(), tables: {} };
       for (const table of tables) {
         try {
@@ -218,6 +245,11 @@ exports.handler = async function (event) {
     }
 
     if (action === 'research-org-context') {
+      // This route clears industry_context_id, which would bypass an
+      // administrator-set industry — so it is closed to restricted users.
+      if (industryRestriction(member)) {
+        return respond(403, { ok: false, message: 'Your industry is set by your administrator.' });
+      }
       const { selling_company_name, selling_company_website } = payload;
       if (!selling_company_name || !selling_company_name.trim()) {
         return respond(400, { ok: false, message: 'Company name is required.' });
@@ -253,6 +285,12 @@ exports.handler = async function (event) {
       });
 
       return respond(200, { ok: true, org_context_research: researchText });
+    }
+
+    if (action === 'set-english-only') {
+      const value = payload.english_only === true;
+      await supaPatch(`team_members?id=eq.${member.id}`, { english_only: value });
+      return respond(200, { ok: true, english_only: value });
     }
 
     return respond(400, { ok: false, message: 'Unknown action: ' + action });
