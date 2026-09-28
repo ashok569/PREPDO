@@ -1,4 +1,21 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 43 | 2026-09-28
+// The debrief charges PRICES.roleplay_debrief credits once it has been generated
+// (beta rule: allowNegative — the session it belongs to is always allowed to
+// finish, even if the balance ran out during it). Best-effort: a failed charge
+// is logged but never breaks the debrief. Everything else as Build 42.
+//
+// BUILD 42 | 2026-09-24
+// The debrief now knows which difficulty the practice was set to and judges
+// accordingly. The scenario JSON (including difficulty) was already in the
+// prompt, but nothing told the evaluator how to READ it — so a Reserved
+// session, where the prospect deliberately volunteers little, would have been
+// scored as if the salesperson simply failed to get information. Now: Reserved
+// is judged on the QUALITY of the questioning (did it draw information out,
+// build on answers, probe consequences) rather than on how much came back;
+// Challenging on handling of stalls and objections; Friendly on the
+// fundamentals. Prompt-only change — no logic elsewhere touched.
+//
 // BUILD 41 | 2026-09-06
 // Real correction: the Build 31 previously given here was built on a
 // stale, out-of-date base (Build 30, missing the industry-context-
@@ -63,6 +80,7 @@
 const fs = require('fs');
 const path = require('path');
 const { callClaude, extractText, supaPatch, supaGet, getMemberFromSession, buildCacheableSystem, logApiUsage } = require('./_lib.js');
+const { charge } = require('./_access.js');
 
 const CANDIDATE_PATHS = [
   path.join(__dirname, 'lmi-context.md'),
@@ -203,7 +221,14 @@ ${transcript}
 
 ---
 
-Using the sales context above, evaluate the SALESPERSON's performance in this practice conversation (not the AI-played prospect — that side was just simulation for practice). Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the sales context above, evaluate the SALESPERSON's performance in this practice conversation (not the AI-played prospect — that side was just simulation for practice).
+
+DIFFICULTY LEVEL: the scenario's "difficulty" field says how the simulated prospect was set to behave — judge the salesperson against THAT, not against an easier conversation.
+- "reserved": the prospect deliberately volunteered very little and opened up only to good discovery. Little information coming back is EXPECTED and is not itself a failure. Judge the QUALITY of the questioning: did the salesperson ask open, specific questions, build on what was just said, probe consequences and numbers, and draw information out — or did they ask closed/generic questions, pitch early, or fail to follow up? Credit real discovery; call out missed follow-ups.
+- "tough": the prospect pushed back with objections and stalls. Judge how the salesperson handled each stall and objection — did they explore what was behind it, or fold, argue, or pitch harder?
+- "supportive" (or unspecified): a cooperative prospect; judge the fundamentals of the conversation on their merits.
+
+Respond with EXACTLY these markdown section headers, nothing before the first or after the last:
 
 ### DETAILED
 (genuine stage-by-stage analysis of how the conversation went, referencing: ${stageListForSegment(isNonLmi)}. Note specifically what was done well and what diverged from good practice, grounded in what was actually said, not generic advice.)
@@ -227,6 +252,11 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
       max_tokens: 3500
     });
     await logApiUsage({ member_id: member.id, report_id, function_name: 'roleplay-debrief-background', action: 'debrief', model: res.model, claudeResponse: res });
+    try {
+      await charge(member, 'roleplay_debrief', { allowNegative: true, reportId: report_id });
+    } catch (chargeErr) {
+      console.error('debrief charge failed (non-fatal):', chargeErr.message);
+    }
 
     const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE', 'NEXT_PRACTICE', 'POINTS_TO_PONDER']);
     const scoreParsed = extractLeadingNumber(sections.OVERALL_SCORE, 'SCORE');
