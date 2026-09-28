@@ -1,4 +1,28 @@
 // PREPDO — admin-user-setup.js
+// BUILD 6 | 2026-09-28
+// User lifecycle and visibility, from real use of Build 5:
+//  - create-user takes an optional `name` (stored in team_members.name, shown in
+//    the Users list).
+//  - 'deactivate-user': blocks login and spending, ends any live session at once
+//    (session_expires_at set to now), keeps all their work. If the user's
+//    organization has a credit pool, their UNUSED credits are released back to the
+//    pool (their allocation becomes what they actually used) and a 'release'
+//    ledger entry is written. Reversible.
+//  - 'reactivate-user': turns the account back on. Their old login stays closed —
+//    use regenerate-access for a new link — and released credits are not
+//    restored automatically (top up).
+//  - 'delete-user': permanent, and ONLY for a user with no data. Almost every table
+//    points at users with a blocking foreign key, so a plain delete would fail for
+//    anyone who has done anything; instead the server counts the linked rows and, if
+//    any exist, refuses and reports them (deactivate instead). Requires the user's
+//    email typed exactly. Never allowed on yourself, a platform admin, or anyone
+//    above your tier. Their ledger rows go with them (ON DELETE CASCADE).
+//  - 'ledger-check': writes and removes a test ledger row and reports the real
+//    database error if it cannot. create-user and adjust-user now return a
+//    `warnings` list when their history entry could not be saved — found in real
+//    use: the ledger table had no permission for service_role and every write
+//    failed silently (by design non-fatal), so nobody could see it.
+//
 // BUILD 5 | 2026-09-28
 // Credits and organization pools (replacing the run counts of the unreleased
 // Build 4). A credit is a fixed slice of AI cost ($0.10 for now — see
@@ -65,8 +89,8 @@
 // organization_id.
 
 const crypto = require('crypto');
-const { getMemberFromSession, supaGet, supaPost, supaPatch, hashToken, respond, handleOptions } = require('./_lib.js');
-const { creditsRemaining, round2, recordLedger } = require('./_access.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, hashToken, respond, handleOptions } = require('./_lib.js');
+const { creditsRemaining, round2, tryLedger } = require('./_access.js');
 
 const TIER_RANK = { member: 0, org_admin: 1, institutional_admin: 2, platform_admin: 3 };
 
@@ -106,6 +130,34 @@ function parseCredits(v) {
   return round2(n);
 }
 
+// Shown to the admin when a ledger entry could not be saved (the action itself
+// still went through).
+function ledgerWarning(what, err) {
+  const detail = String(err || '').slice(0, 160);
+  return `${what}, but its history entry could not be saved (${detail}). Use "Check credit ledger" in User Setup.`;
+}
+
+// Every table that points at a user with a blocking foreign key (from the live
+// database's own constraint list). A user with rows in any of these cannot be
+// deleted — only deactivated.
+const OWNED_BY_USER = [
+  ['prospects', 'owner_id', 'prospects'],
+  ['reports', 'owner_id', 'reports'],
+  ['folders', 'owner_id', 'folders'],
+  ['action_items', 'owner_id', 'action items'],
+  ['stalls_objections_log', 'owner_id', 'stall/objection entries'],
+  ['learnings', 'owner_id', 'learnings'],
+  ['api_usage_log', 'member_id', 'AI usage records'],
+  ['iterative_research_sessions', 'member_id', 'Guided Research sessions'],
+  ['invites', 'invited_by', 'invites sent'],
+  ['gleaner_reports', 'triggered_by', 'Gleaner reports'],
+  ['subscriptions', 'created_by', 'subscriptions created'],
+  ['subscriptions', 'approved_by', 'subscriptions approved'],
+  ['report_backups', 'downloaded_by', 'report backups downloaded'],
+  ['report_backups', 'restored_by', 'report backups restored']
+];
+const COUNT_CAP = 1000;
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function generateSetupToken() {
@@ -126,6 +178,8 @@ function summarize(row) {
   return {
     id: row.id,
     email: row.email,
+    name: row.name || null,
+    is_active: row.is_active !== false,
     key_type: row.key_type,
     user_segment: row.user_segment,
     access_level: row.access_level,
@@ -247,9 +301,16 @@ exports.handler = async function (event) {
     }
 
     if (action === 'create-user') {
-      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids } = payload;
+      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids, name } = payload;
       if (!email || !email.trim()) {
         return respond(400, { ok: false, message: 'Email is required.' });
+      }
+      let cleanName = null;
+      if (name !== undefined && name !== null && String(name).trim() !== '') {
+        cleanName = String(name).trim();
+        if (cleanName.length > 100) {
+          return respond(400, { ok: false, message: 'Name must be 100 characters or fewer.' });
+        }
       }
       if (!(key_type in TIER_RANK)) {
         return respond(400, { ok: false, message: 'Invalid key_type.' });
@@ -366,15 +427,19 @@ exports.handler = async function (event) {
       if (planDef.months) row.subscription_expiry_date = isoDate(addMonths(now, planDef.months));
       if (plan === 'annual') row.subscription_type = 'paid';
       if (allowedIds) row.industry_context_id = allowedIds[0];
+      if (cleanName) row.name = cleanName;
 
       const created = await supaPost('team_members', row);
+      const warnings = [];
       if (creditsTotal != null) {
-        await recordLedger({ member_id: created[0].id, action: 'initial_grant', delta: creditsTotal, balance_after: creditsTotal, actor_id: member.id, note: 'plan ' + plan });
+        const led = await tryLedger({ member_id: created[0].id, action: 'initial_grant', delta: creditsTotal, balance_after: creditsTotal, actor_id: member.id, note: 'plan ' + plan });
+        if (!led.ok) warnings.push(ledgerWarning('The credits were granted', led.error));
       }
 
       return respond(200, {
         ok: true,
         member: summarize(created[0]),
+        warnings,
         setup_token: setupToken,
         setup_url: `${process.env.URL || 'https://prepdo.netlify.app'}/index.html?setup_token=${setupToken}`,
         instructions: 'Share this link with the new user — they just click it and confirm their email. If the link doesn\'t come through cleanly, they can also go to the login page, choose "Have an access token instead?", and enter their email plus the token below manually.'
@@ -454,10 +519,121 @@ exports.handler = async function (event) {
       }
 
       const patched = await supaPatch(`team_members?id=eq.${user_id}`, updates);
+      const warnings = [];
       if (addedCredits != null) {
-        await recordLedger({ member_id: user_id, action: 'top_up', delta: addedCredits, balance_after: creditsRemaining(patched[0]), actor_id: member.id, note: null });
+        const led = await tryLedger({ member_id: user_id, action: 'top_up', delta: addedCredits, balance_after: creditsRemaining(patched[0]), actor_id: member.id, note: null });
+        if (!led.ok) warnings.push(ledgerWarning('The credits were added', led.error));
       }
-      return respond(200, { ok: true, user: summarize(patched[0]) });
+      return respond(200, { ok: true, user: summarize(patched[0]), warnings });
+    }
+
+    if (action === 'ledger-check') {
+      if (!platformLevel) {
+        return respond(403, { ok: false, message: 'Only platform or institutional admins can run this check.' });
+      }
+      let probe;
+      try {
+        probe = await supaPost('credit_ledger', { member_id: member.id, action: 'health_check', delta: 0, balance_after: null, actor_id: member.id, note: 'ledger check' });
+      } catch (e) {
+        return respond(200, { ok: true, healthy: false, message: 'The credit ledger is NOT working — a test entry could not be written: ' + String(e.message).slice(0, 300) });
+      }
+      try {
+        await supaDelete(`credit_ledger?id=eq.${probe[0].id}`);
+      } catch (e) {
+        return respond(200, { ok: true, healthy: false, message: 'The ledger accepted a test entry but it could not be removed: ' + String(e.message).slice(0, 300) });
+      }
+      return respond(200, { ok: true, healthy: true, message: 'The credit ledger is working: a test entry was written and removed.' });
+    }
+
+    if (action === 'deactivate-user' || action === 'reactivate-user' || action === 'delete-user') {
+      if (!platformLevel) {
+        return respond(403, { ok: false, message: 'Only platform or institutional admins can deactivate or delete users.' });
+      }
+      const { user_id } = payload;
+      if (!user_id || !UUID_RE.test(user_id)) {
+        return respond(400, { ok: false, message: 'A valid user is required.' });
+      }
+      const found = await supaGet(`team_members?id=eq.${user_id}&select=*`);
+      if (!found.length) {
+        return respond(404, { ok: false, message: 'User not found.' });
+      }
+      const target = found[0];
+      if (target.id === member.id) {
+        return respond(400, { ok: false, message: 'You cannot do this to your own account.' });
+      }
+      if (target.key_type === 'platform_admin') {
+        return respond(400, { ok: false, message: 'A platform admin account cannot be deactivated or deleted through this tool.' });
+      }
+      if (TIER_RANK[target.key_type] > TIER_RANK[member.key_type]) {
+        return respond(403, { ok: false, message: 'You cannot change a user above your own tier.' });
+      }
+
+      if (action === 'deactivate-user') {
+        if (target.is_active === false) {
+          return respond(400, { ok: false, message: 'This user is already deactivated.' });
+        }
+        // Ending the session is what actually stops a user who is logged in right now:
+        // not every function re-checks is_active, but every one checks the session.
+        const updates = { is_active: false, session_expires_at: new Date().toISOString() };
+        let released = 0;
+        if (target.credits_total != null && target.organization_id) {
+          const orgs = await supaGet(`organizations?id=eq.${target.organization_id}&select=credit_pool`);
+          if (orgs.length && orgs[0].credit_pool != null) {
+            const used = round2(Number(target.credits_used || 0));
+            const unused = round2(Number(target.credits_total) - used);
+            if (unused > 0) {
+              updates.credits_total = used; // their allocation shrinks to what they actually used
+              released = unused;
+            }
+          }
+        }
+        const patched = await supaPatch(`team_members?id=eq.${user_id}`, updates);
+        const warnings = [];
+        if (released > 0) {
+          const led = await tryLedger({ member_id: user_id, action: 'release', delta: -released, balance_after: creditsRemaining(patched[0]), actor_id: member.id, note: 'unused credits released to the pool on deactivation' });
+          if (!led.ok) warnings.push(ledgerWarning('The credits were released', led.error));
+        }
+        return respond(200, { ok: true, user: summarize(patched[0]), released, warnings });
+      }
+
+      if (action === 'reactivate-user') {
+        if (target.is_active !== false) {
+          return respond(400, { ok: false, message: 'This user is already active.' });
+        }
+        const patched = await supaPatch(`team_members?id=eq.${user_id}`, { is_active: true });
+        return respond(200, {
+          ok: true,
+          user: summarize(patched[0]),
+          message: 'Reactivated. Their old login stays closed — use Regenerate Access to give them a new link. Credits released when they were deactivated are not restored automatically; top up if needed.'
+        });
+      }
+
+      // delete-user — only for a user with no data at all.
+      const counts = await Promise.all(OWNED_BY_USER.map(async ([table, col, label]) => {
+        const rows = await supaGet(`${table}?${col}=eq.${user_id}&select=${col}&limit=${COUNT_CAP}`);
+        return { label, n: rows.length };
+      }));
+      const merged = {};
+      counts.filter((c) => c.n > 0).forEach((c) => { merged[c.label] = (merged[c.label] || 0) + c.n; });
+      const blockers = Object.entries(merged).map(([label, n]) => ({ label, n }));
+      if (blockers.length) {
+        const list = blockers.map((b) => `${b.n >= COUNT_CAP ? COUNT_CAP + '+' : b.n} ${b.label}`).join(', ');
+        return respond(400, {
+          ok: false,
+          blockers,
+          message: `This user has activity that would be lost: ${list}. Deactivate them instead — nothing is deleted and they can be reactivated.`
+        });
+      }
+      const typed = String(payload.confirm_email || '').trim().toLowerCase();
+      if (!typed || typed !== String(target.email).toLowerCase()) {
+        return respond(400, { ok: false, message: 'To confirm the deletion, type this user\'s email exactly.' });
+      }
+      try {
+        await supaDelete(`team_members?id=eq.${user_id}`);
+      } catch (e) {
+        return respond(409, { ok: false, message: 'Could not delete: the database still has records linked to this user. Deactivate them instead. (' + String(e.message).slice(0, 200) + ')' });
+      }
+      return respond(200, { ok: true, deleted_email: target.email });
     }
 
     if (action === 'regenerate-access') {
