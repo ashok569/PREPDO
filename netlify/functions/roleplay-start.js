@@ -1,4 +1,22 @@
 // PREPDO — roleplay-start.js
+// BUILD 29 | 2026-09-28
+// Credits instead of runs. Starting a roleplay charges NOTHING here — each
+// message (roleplay-turn.js) and the debrief are charged as they happen. A NEW
+// roleplay only requires at least MIN_TO_START_ROLEPLAY credit in the balance
+// (beta rule: a session already started is always allowed to finish, even if
+// the balance runs out mid-session). Roleplay-only accounts still limited to
+// standalone practice; prospect ownership check and organization_id as Build 28.
+//
+// BUILD 28 | 2026-09-24 (run-based; never released)
+// Run counting and access control. Starting a roleplay session costs one run
+// (its turns and debrief are covered by that run). Roleplay-only accounts are
+// limited to standalone practice — a prospect-tied roleplay needs a prospect
+// and a Presales Prep report, which they don't have. A prospect-tied session
+// now also verifies the prospect is one the caller may access. The run is
+// refunded if the session row can't be created. New sessions carry
+// organization_id. Difficulty is stored as supplied (supportive / tough /
+// reserved) — no whitelist here, so the new level needed no change.
+//
 // BUILD 27 | 2026-08-11
 // New file. Creates the report row (report_type: 'role_play', status
 // 'complete' from the start — unlike Presales Prep/Meeting Analysis,
@@ -21,7 +39,8 @@
 // themselves, same pattern as both reference roleplay transcripts this
 // was designed from.
 
-const { getMemberFromSession, supaPost, supaGet, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaPost, supaGet, respond, handleOptions, isInScope } = require('./_lib.js');
+const { checkAccess, MIN_TO_START_ROLEPLAY } = require('./_access.js');
 
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
@@ -54,6 +73,12 @@ exports.handler = async function (event) {
       return respond(400, { ok: false, message: 'prospect_id required for a prospect-tied roleplay.' });
     }
 
+    const denied = checkAccess(member, { needCredits: MIN_TO_START_ROLEPLAY });
+    if (denied) return respond(denied.status, denied.body);
+    if (member.access_level === 'roleplay_only' && scenario.mode === 'prospect_tied') {
+      return respond(403, { ok: false, code: 'roleplay_only', message: 'Your account is set up for standalone Roleplay practice.' });
+    }
+
     let prospectContext = null;
     let presalesContext = null;
 
@@ -63,6 +88,9 @@ exports.handler = async function (event) {
         return respond(404, { ok: false, message: 'Prospect not found.' });
       }
       prospectContext = prospects[0];
+      if (!isInScope(member, prospectContext)) {
+        return respond(403, { ok: false, message: 'Not authorized.' });
+      }
 
       const latestPresales = await supaGet(
         `reports?prospect_id=eq.${prospect_id}&report_type=eq.presales_prep&status=eq.complete&select=confirmed_facts,ai_output_detailed&order=created_at.desc&limit=1`
@@ -75,6 +103,7 @@ exports.handler = async function (event) {
     const [report] = await supaPost('reports', {
       prospect_id: prospect_id || null,
       owner_id: member.id,
+      organization_id: member.organization_id || null,
       report_type: 'role_play',
       status: 'complete', // the conversation itself has no "generation" step to wait on
       structured_data: {
