@@ -1,4 +1,18 @@
 // PREPDO — _lib.js
+// BUILD 25 | 2026-09-28
+// Cost logging corrected — two real errors found by reading estimateCostUsd
+// against the first real cost data: (1) it applied ONE flat rate ($3 in / $15
+// out per million) to every call regardless of model, so every Haiku call
+// (all research, the facts section, Guided Research) was logged at ~3x its real
+// cost — Haiku is $1 / $5; (2) it counted tokens only, never the web-search
+// fee ($10 per 1,000 searches = $0.01 each, billed on top of tokens) — which
+// is a real share of research cost and is reported by the API in
+// usage.server_tool_use.web_search_requests. Rates are now per model family
+// (unknown models are priced at the higher Sonnet rate — conservative), and the
+// search fee is added. Nothing else in this file changed. Historical rows
+// keep their old (Haiku-overstated, search-blind) values unless corrected by
+// the one-off UPDATE in migration_v22.sql.
+//
 // BUILD 24 | 2026-09-06
 // Added getScopeFilter() and isInScope() — the real fix for a gap
 // found during a direct audit of every admin check in the codebase:
@@ -53,8 +67,8 @@
 // BUILD 22 | 2026-08-10
 // Real bug fix: confirmed via a genuinely stuck Meeting Analysis report
 // (status 'pending', error_message NULL, hours later) that the BUILD 16
-// timeout fix only covered callClaude() — every Supabase call (supaGet/
-// supaPost/supaPatch/supaDelete) still had zero timeout protection at
+// timeout fix only covered callClaude() — every Supabase call
+// (supaGet/supaPost/supaPatch/supaDelete) still had zero timeout protection at
 // all. Since getMemberFromSession() — the very first thing every
 // background function does — calls supaGet(), a single hung Supabase
 // request could stall the entire function before it ever reached any
@@ -288,24 +302,34 @@ function extractText(claudeResponse) {
 // separately, so they can never silently drift out of sync with it.
 // Update PRICE_INPUT/PRICE_OUTPUT here if Anthropic's rates change;
 // the cache prices recalculate automatically.
-const PRICING_PER_MILLION = {
-  input: 3.0,
-  output: 15.0,
-  get cacheWrite() { return this.input * 1.25; },
-  get cacheRead() { return this.input * 0.1; }
+// USD per million tokens, by model family. Cache write = 1.25x input, cache
+// read = 0.1x input (both scale with the model's input rate).
+const MODEL_PRICING = {
+  haiku: { input: 1.0, output: 5.0 },
+  sonnet: { input: 3.0, output: 15.0 }
 };
+const WEB_SEARCH_USD_EACH = 0.01; // $10 per 1,000 searches, on top of tokens
 
-function estimateCostUsd(usage) {
+function pricingForModel(model) {
+  const m = String(model || '').toLowerCase();
+  if (m.includes('haiku')) return MODEL_PRICING.haiku;
+  return MODEL_PRICING.sonnet; // Sonnet, or an unknown model: the higher rate
+}
+
+function estimateCostUsd(usage, model) {
+  const p = pricingForModel(model);
   const inputTokens = usage.input_tokens || 0;
   const outputTokens = usage.output_tokens || 0;
   const cacheWriteTokens = usage.cache_creation_input_tokens || 0;
   const cacheReadTokens = usage.cache_read_input_tokens || 0;
-  return (
-    (inputTokens * PRICING_PER_MILLION.input) +
-    (outputTokens * PRICING_PER_MILLION.output) +
-    (cacheWriteTokens * PRICING_PER_MILLION.cacheWrite) +
-    (cacheReadTokens * PRICING_PER_MILLION.cacheRead)
+  const tokenCost = (
+    (inputTokens * p.input) +
+    (outputTokens * p.output) +
+    (cacheWriteTokens * p.input * 1.25) +
+    (cacheReadTokens * p.input * 0.1)
   ) / 1_000_000;
+  const searches = (usage.server_tool_use && usage.server_tool_use.web_search_requests) || 0;
+  return tokenCost + searches * WEB_SEARCH_USD_EACH;
 }
 
 // Builds a correctly-structured `system` array with a cache_control
@@ -347,7 +371,7 @@ async function logApiUsage({ member_id, report_id, function_name, action, model,
       output_tokens: usage.output_tokens || 0,
       cache_creation_input_tokens: usage.cache_creation_input_tokens || 0,
       cache_read_input_tokens: usage.cache_read_input_tokens || 0,
-      estimated_cost_usd: estimateCostUsd(usage)
+      estimated_cost_usd: estimateCostUsd(usage, model)
     });
   } catch (err) {
     console.error('logApiUsage failed (non-fatal, report generation continues):', err.message);
@@ -404,5 +428,6 @@ module.exports = {
   getMemberFromSession,
   callClaude, extractText,
   buildCacheableSystem, logApiUsage,
-  getScopeFilter, isInScope
+  getScopeFilter, isInScope,
+  estimateCostUsd
 };
