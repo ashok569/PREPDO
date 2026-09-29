@@ -1,4 +1,12 @@
 // PREPDO — admin-user-setup.js
+// BUILD 7 | 2026-09-29
+// Real gap found while tracing custom (non-public) industries end to end: an
+// org_admin could pass a custom industry's id directly in industry_ids on
+// create-user — hidden from their own checklist (settings.js list-industries),
+// but not actually blocked server-side. Now checked explicitly: a non-public
+// industry in the submitted ids is refused unless the ACTING admin (member,
+// not the user being created) is platform-level.
+//
 // BUILD 6 | 2026-09-28
 // User lifecycle and visibility, from real use of Build 5:
 //  - create-user takes an optional `name` (stored in team_members.name, shown in
@@ -375,9 +383,12 @@ exports.handler = async function (event) {
         if (ids.length > 40 || !ids.every((i) => typeof i === 'string' && UUID_RE.test(i))) {
           return respond(400, { ok: false, message: 'Invalid industry selection.' });
         }
-        const found = await supaGet(`industry_contexts?id=in.(${ids.join(',')})&select=id`);
+        const found = await supaGet(`industry_contexts?id=in.(${ids.join(',')})&select=id,is_public`);
         if (found.length !== ids.length) {
           return respond(400, { ok: false, message: 'One or more selected industries no longer exist.' });
+        }
+        if (!platformLevel && found.some((f) => !f.is_public)) {
+          return respond(403, { ok: false, message: 'Your account cannot assign a custom industry.' });
         }
         allowedIds = ids;
       }
