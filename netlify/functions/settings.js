@@ -1,4 +1,20 @@
 // PREPDO — settings.js
+// BUILD 55 | 2026-09-29
+// Custom (non-public) industries — for a bespoke, single-client document like
+// KBR's, which must never appear to an ordinary B2B user. industry_contexts
+// gained is_public (migration_v23.sql; existing rows default true, so nothing
+// already live changes). Two real gaps found while tracing this end to end,
+// consistent with this file's own stated rule of enforcing server-side, not
+// just hiding in the UI:
+//  - list-industries: an unrestricted caller previously saw the WHOLE table.
+//    Now: platform-level (platform_admin/institutional_admin) still sees
+//    everything; anyone else unrestricted sees only is_public rows. An
+//    org_admin is "anyone else" here even though they're not gated elsewhere
+//    in this file — they must never see or hand out a custom industry.
+//  - select-industry only checked the row EXISTED, never whether the caller
+//    was allowed to pick it — a non-public id could be set directly even
+//    though it was hidden from the dropdown. Now checked explicitly.
+//
 // BUILD 54 | 2026-09-28
 // Added 'credit_ledger' (migration_v22.sql) to the Full Data Backup table
 // list — the same gap Build 52 fixed for the tier tables: a new table is not
@@ -136,9 +152,13 @@ exports.handler = async function (event) {
 
     if (action === 'list-industries') {
       // Restricted users see only the industries their administrator
-      // allowed; platform_admin (and anyone unrestricted) sees them all.
+      // allowed (custom or public — an explicit assignment always wins).
+      // An unrestricted caller sees only public industries, UNLESS they are
+      // platform-level, who see everything (the library editor, and the
+      // User Setup checklist, both need the full list).
       const allowedIds = industryRestriction(member);
-      const filter = allowedIds ? `&id=in.(${allowedIds.join(',')})` : '';
+      const platformLevel = member.key_type === 'platform_admin' || member.key_type === 'institutional_admin';
+      const filter = allowedIds ? `&id=in.(${allowedIds.join(',')})` : (platformLevel ? '' : '&is_public=eq.true');
       const rows = await supaGet(`industry_contexts?select=id,industry_name&order=display_order.asc${filter}`);
       return respond(200, { ok: true, industries: rows });
     }
@@ -155,10 +175,16 @@ exports.handler = async function (event) {
       if (allowedIds && !allowedIds.includes(industry_context_id)) {
         return respond(403, { ok: false, message: 'That industry is not available on your account.' });
       }
-      // Confirm the industry actually exists before pointing at it.
-      const check = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id`);
+      // Confirm the industry exists AND, for an unrestricted non-platform-level
+      // caller, that it's public — enforced here, not just hidden from the
+      // dropdown (an id could otherwise be set directly, bypassing the UI).
+      const check = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id,is_public`);
       if (!check.length) {
         return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      const platformLevel = member.key_type === 'platform_admin' || member.key_type === 'institutional_admin';
+      if (!allowedIds && !platformLevel && !check[0].is_public) {
+        return respond(403, { ok: false, message: 'That industry is not available on your account.' });
       }
       await supaPatch(`team_members?id=eq.${member.id}`, {
         industry_context_id,
