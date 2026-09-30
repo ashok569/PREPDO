@@ -1,7 +1,22 @@
-### `meeting-analysis-background.js` — Build 41
-
-```javascript
 // PREPDO — meeting-analysis-background.js
+// BUILD 42 | 2026-09-30
+// Relationship Building — a new section, alongside the technique analysis,
+// looking at signals that belong to the wider sales journey rather than one
+// meeting: Courtesy, Personal Opening, Access, Trust, Personal Advocacy, and
+// Unsolicited Information — reporting what went well plus real quoted
+// extracts from the transcript. Same instruction as roleplay-debrief-
+// background.js Build 45, with one addition specific to real meetings: a
+// Meeting Analysis can be filled in from structured notes alone, with no
+// transcript to quote from (unlike Role Play, which always has one) — the
+// prompt now says so explicitly rather than risking invented quotes. Given
+// its own dedicated parallel call (generateRelationshipBuilding) rather than
+// folded into an existing one — this file has twice already (Build 22,
+// Build 42) hit a real truncation bug from sections sharing one token
+// budget; a new section is safest kept off that shared-budget pattern
+// entirely rather than risking becoming the next casualty of it. Saved to
+// reports.ai_output_relationship — a column shared with Role Play debriefs
+// (migration_v25.sql), since the same instruction now applies to both.
+//
 // BUILD 41 | 2026-09-06
 // Added prompt caching (all 5 parallel calls embed the same, large
 // METHODOLOGY_CONTEXT — same honest caveat as presales-generate-
@@ -85,7 +100,7 @@
 // Plus (Build 38) Self-Reflection Eval and Client Perspective:
 //   ai_output_self_reflection, ai_output_client_perspective
 //
-// 5 parallel calls total (no time-pressure — Background Function).
+// 6 parallel calls total (no time-pressure — Background Function).
 
 const fs = require('fs');
 const path = require('path');
@@ -327,6 +342,33 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY these 
   }
 }
 
+async function generateRelationshipBuilding(prospect, meeting, methodologyContext, isNonLmi) {
+  try {
+    const hasTranscript = meeting.transcript && meeting.transcript.trim();
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
+
+---
+
+Alongside the technique analysis, look for relationship-building signals in this meeting — moments that move the relationship beyond the immediate exchange. These fall into five levels: Courtesy (baseline politeness — not itself a signal), Personal Opening (moving from task to person — where are you based, how long have you done this), Access (an invitation to meet someone else, expanding the relationship's reach), Trust (the other person asks for an opinion, help, or advice outside the immediate scope), and Personal Advocacy (the other person starts recommending or vouching for the salesperson to someone else). Also watch for Unsolicited Information — the other person volunteers something (a plan, a problem, a change) without being asked; note whether the salesperson resisted pitching immediately and instead explored it ("tell me more about that").
+
+Respond with EXACTLY this markdown section header, nothing before it or after the content:
+
+### RELATIONSHIP_BUILDING
+**What went well** — a short synthesis of genuine relationship-building moments actually present in the meeting, organized by level where relevant. If little or nothing of this kind occurred, say so plainly rather than manufacturing examples.
+**Extracts** — for each moment named above, a short, exact quote from the conversation (a sentence or two) showing what was actually said, labeled with which level it represents.${hasTranscript ? '' : '\n\nNo transcript was provided for this meeting — only structured notes. Draw on those instead, and say plainly that this section is limited without a transcript to quote from; do not invent quotes.'}`;
+
+    const res = await callClaude({
+      system: buildCacheableSystem(methodologyContext),
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1400
+    });
+    const sections = parseMarkers(extractText(res), ['RELATIONSHIP_BUILDING']);
+    return { ok: true, sections, model: res.model, usage: res.usage };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 async function generateReflectionAndClient(prospect, meeting, methodologyContext, isNonLmi) {
   try {
     const hasUserReflection = meeting.self_reflection && (meeting.self_reflection.what_went_well || meeting.self_reflection.what_could_improve || meeting.self_reflection.sales_cycle_adherence_percent);
@@ -415,22 +457,23 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
-    const [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult] = await Promise.allSettled([
+    const [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult] = await Promise.allSettled([
       generateDetailed(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateSummaryScore(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateScoring(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateGaps(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
-      generateReflectionAndClient(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
+      generateReflectionAndClient(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateRelationshipBuilding(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
     ]);
 
-    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult].map((r) =>
+    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult].map((r) =>
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
 
     // Log real usage for every section that actually ran, regardless of
     // downstream success — a failed parse after a successful, billed
     // API call still cost real money and should be logged.
-    const sectionNames = ['detailed', 'summary_score', 'scoring', 'gaps', 'reflection'];
+    const sectionNames = ['detailed', 'summary_score', 'scoring', 'gaps', 'reflection', 'relationship'];
     await Promise.all(results.map((r, i) =>
       r.usage
         ? logApiUsage({ member_id: member.id, report_id, function_name: 'meeting-analysis-background', action: sectionNames[i], model: r.model, claudeResponse: { usage: r.usage } })
@@ -452,6 +495,7 @@ exports.handler = async function (event) {
     if (!results[2].ok) failedParts.push('Probability of Close / Recommended Actions');
     if (!results[3].ok) failedParts.push('Missed Items / Opportunities / Points to Ponder');
     if (!results[4].ok) failedParts.push('Self-Reflection Evaluation / Client Perspective');
+    if (!results[5].ok) failedParts.push('Relationship Building');
 
     const scoreParsed = extractLeadingNumber(allSections.OVERALL_SCORE, 'SCORE');
     const probParsed = extractLeadingNumber(allSections.PROBABILITY_OF_CLOSE, 'PROBABILITY');
@@ -487,6 +531,7 @@ exports.handler = async function (event) {
       ai_output_ponder: ponder,
       ai_output_self_reflection: allSections.SELF_REFLECTION_EVAL || '(not generated)',
       ai_output_client_perspective: allSections.CLIENT_PERSPECTIVE || '(not generated)',
+      ai_output_relationship: allSections.RELATIONSHIP_BUILDING || '',
       status: 'complete'
     });
 
@@ -501,4 +546,3 @@ exports.handler = async function (event) {
     return { statusCode: 200, body: 'done (failed - exception)' };
   }
 };
-```
