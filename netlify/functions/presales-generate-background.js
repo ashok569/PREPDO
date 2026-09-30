@@ -1,4 +1,18 @@
 // PREPDO — presales-generate-background.js
+// BUILD 44 | 2026-09-30
+// Real limitation found and fixed: the append-vs-overwrite behavior below was
+// gated entirely on new_contact being set — naming a new contact preserved the
+// old report with a clearly marked new section; adding only new information
+// (no new contact) silently discarded the old content and regenerated from
+// scratch. Now: previousReport is fetched whenever a previous complete
+// presales_prep report exists for this prospect AT ALL, not only when
+// new_contact is given. new_contact still controls generationProspect (whose
+// perspective the new content is written from) and which of two marker texts
+// appendPerspective uses — a perspective-shift marker when a new contact was
+// named, a plainer "new information" marker otherwise. A first-ever generation
+// is unaffected (no previous report exists yet, so appendPerspective still
+// just returns the fresh content, exactly as before).
+//
 // BUILD 43 | 2026-09-11
 // Real correction to Build 42's own reasoning, found via a fresh test
 // report: generateStrategy() was left unchanged on the assumption that
@@ -364,19 +378,25 @@ exports.handler = async function (event) {
     // SIDE (never trusting client-supplied "previous content"), and
     // generate fresh content using the new contact as primary
     // perspective. Combined with the old content AFTER generation.
+    //
+    // BUILD 44: the fetch below now runs UNCONDITIONALLY — a previous
+    // complete report is preserved-and-appended-to on ANY rerun, not only
+    // when a new contact is named. new_contact still only affects whose
+    // perspective the new content is generated from, and which marker text
+    // appendPerspective uses below.
     let previousReport = null;
     let generationProspect = prospect;
+    try {
+      const priorRows = await supaGet(
+        `reports?prospect_id=eq.${prospect.id}&report_type=eq.presales_prep&status=eq.complete&select=*&order=created_at.desc&limit=1`
+      );
+      if (priorRows.length) previousReport = priorRows[0];
+    } catch (e) {
+      // If the lookup fails, proceed as a first-time-shaped generation rather
+      // than blocking the whole report over a missing "previous report to
+      // append to."
+    }
     if (new_contact && new_contact.name) {
-      try {
-        const priorRows = await supaGet(
-          `reports?prospect_id=eq.${prospect.id}&report_type=eq.presales_prep&status=eq.complete&select=*&order=created_at.desc&limit=1`
-        );
-        if (priorRows.length) previousReport = priorRows[0];
-      } catch (e) {
-        // If the lookup fails, proceed as a normal generation rather
-        // than blocking the whole report over a missing "previous
-        // report to append to."
-      }
       generationProspect = { ...prospect, prospect_name: new_contact.name, position: new_contact.role || prospect.position };
     }
 
@@ -450,9 +470,14 @@ exports.handler = async function (event) {
     // Applied independently to each field, so a field the new
     // generation didn't touch (e.g. SPIN, if that call failed) still
     // shows the old content rather than going blank.
+    //
+    // BUILD 44: the marker now varies — a perspective-shift marker when a
+    // new contact was named, a plainer "new information" marker otherwise.
     function appendPerspective(oldContent, newContent) {
-      if (!previousReport) return newContent; // no perspective shift — normal generation, unchanged
-      const marker = `\n\n---\n\n## Updated Perspective — Meeting with ${new_contact.name}${new_contact.role ? ', ' + new_contact.role : ''} (Generated ${new Date().toLocaleDateString()})\n\n`;
+      if (!previousReport) return newContent; // first-ever generation for this prospect — nothing to append to
+      const marker = (new_contact && new_contact.name)
+        ? `\n\n---\n\n## Updated Perspective — Meeting with ${new_contact.name}${new_contact.role ? ', ' + new_contact.role : ''} (Generated ${new Date().toLocaleDateString()})\n\n`
+        : `\n\n---\n\n## Updated — New Information Added (Generated ${new Date().toLocaleDateString()})\n\n`;
       return (oldContent || '(no prior content)') + marker + newContent;
     }
 
