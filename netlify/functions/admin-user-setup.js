@@ -1,4 +1,17 @@
 // PREPDO — admin-user-setup.js
+// BUILD 8 | 2026-10-02
+// Privacy and the temporary credit-request marker (migration_v27.sql):
+//  - create-user and adjust-user take can_clear_data (true/false) — whether a
+//    user may clear their own prospects' data from the cloud. Defaults to true.
+//    Only platform-level admins (platform_admin, institutional_admin) may set
+//    it; an org_admin who supplies it is refused, so it can't be quietly
+//    changed by someone who doesn't own that decision.
+//  - list-users and summarize return can_clear_data and the credit_request_*
+//    fields. adjust-user clears a pending credit request automatically when
+//    credits are added, and also accepts dismiss_credit_request for the case
+//    where the admin decides not to grant it. The credit-request pieces are
+//    TEMPORARY, to be removed with the real email system (see settings.js 57).
+//
 // BUILD 7 | 2026-09-29
 // Real gap found while tracing custom (non-public) industries end to end: an
 // org_admin could pass a custom industry's id directly in industry_ids on
@@ -195,7 +208,10 @@ function summarize(row) {
     expires_on: row.subscription_expiry_date || null,
     credits_total: row.credits_total == null ? null : Number(row.credits_total),
     credits_used: round2(Number(row.credits_used || 0)),
-    credits_remaining: creditsRemaining(row)
+    credits_remaining: creditsRemaining(row),
+    can_clear_data: row.can_clear_data !== false,
+    credit_request_at: row.credit_request_at || null,
+    credit_request_note: row.credit_request_note || null
   };
 }
 
@@ -309,7 +325,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'create-user') {
-      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids, name } = payload;
+      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids, name, can_clear_data } = payload;
       if (!email || !email.trim()) {
         return respond(400, { ok: false, message: 'Email is required.' });
       }
@@ -370,6 +386,18 @@ exports.handler = async function (event) {
           return respond(400, { ok: false, message: 'Credits must be a positive number (up to 10,000,000).' });
         }
         creditsTotal = n;
+      }
+
+      // Data-clearing permission: only platform-level admins may set it.
+      let canClearData = null; // null = leave the database default (true)
+      if (can_clear_data !== undefined && can_clear_data !== null && can_clear_data !== '') {
+        if (!platformLevel) {
+          return respond(403, { ok: false, message: 'Your account cannot change the data-clearing permission.' });
+        }
+        if (typeof can_clear_data !== 'boolean') {
+          return respond(400, { ok: false, message: 'can_clear_data must be true or false.' });
+        }
+        canClearData = can_clear_data;
       }
 
       // Industry restriction (B2B only). Every id is validated as a UUID
@@ -438,6 +466,7 @@ exports.handler = async function (event) {
       if (planDef.months) row.subscription_expiry_date = isoDate(addMonths(now, planDef.months));
       if (plan === 'annual') row.subscription_type = 'paid';
       if (allowedIds) row.industry_context_id = allowedIds[0];
+      if (canClearData === false) row.can_clear_data = false;
       if (cleanName) row.name = cleanName;
 
       const created = await supaPost('team_members', row);
@@ -458,7 +487,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'list-users') {
-      const cols = 'id,email,name,key_type,user_segment,organization_id,access_level,plan_type,subscription_expiry_date,credits_total,credits_used,allowed_industry_ids,is_active,last_login,created_at';
+      const cols = 'id,email,name,key_type,user_segment,organization_id,access_level,plan_type,subscription_expiry_date,credits_total,credits_used,allowed_industry_ids,is_active,last_login,created_at,can_clear_data,credit_request_at,credit_request_note';
       let rows = [];
       if (platformLevel) {
         rows = await supaGet(`team_members?select=${cols}&order=created_at.desc`);
@@ -474,7 +503,7 @@ exports.handler = async function (event) {
       if (!platformLevel) {
         return respond(403, { ok: false, message: 'Only platform or institutional admins can change credits or plans.' });
       }
-      const { user_id, add_credits, extend_months, access_level } = payload;
+      const { user_id, add_credits, extend_months, access_level, can_clear_data, dismiss_credit_request } = payload;
       if (!user_id || !UUID_RE.test(user_id)) {
         return respond(400, { ok: false, message: 'A valid user is required.' });
       }
@@ -524,6 +553,18 @@ exports.handler = async function (event) {
           return respond(400, { ok: false, message: 'access_level must be "full" or "roleplay_only".' });
         }
         updates.access_level = access_level;
+      }
+      if (can_clear_data !== undefined && can_clear_data !== null && can_clear_data !== '') {
+        if (typeof can_clear_data !== 'boolean') {
+          return respond(400, { ok: false, message: 'can_clear_data must be true or false.' });
+        }
+        updates.can_clear_data = can_clear_data;
+      }
+      // TEMPORARY credit-request marker: topping up answers it; dismissing
+      // does too. Remove with the email system.
+      if (dismiss_credit_request === true || addedCredits != null) {
+        updates.credit_request_at = null;
+        updates.credit_request_note = null;
       }
       if (Object.keys(updates).length === 0) {
         return respond(400, { ok: false, message: 'Nothing to change.' });
