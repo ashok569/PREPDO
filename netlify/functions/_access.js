@@ -1,4 +1,11 @@
 // PREPDO — _access.js
+// BUILD 4 | 2026-10-02
+// describeAccess now reports can_clear_data — whether this user may clear a
+// prospect's data from the cloud (migration_v27.sql). True unless an
+// institutional/platform admin switched it off for them; platform-level
+// admins themselves are never restricted. The server (prospects.js) is the
+// real check — this just lets the screen show or hide the button.
+//
 // BUILD 3 | 2026-09-28
 // Added tryLedger(): like recordLedger but reports failure ({ ok:false, error })
 // instead of swallowing it, so admin actions can show a warning. Found in real
@@ -190,7 +197,8 @@ function describeAccess(member) {
     full_cycle_cost: FULL_CYCLE,
     credit_unit_usd: CREDIT_UNIT_USD,
     english_only: !!member.english_only,
-    allowed_industry_ids: industryRestriction(member)
+    allowed_industry_ids: industryRestriction(member),
+    can_clear_data: member.key_type === 'platform_admin' || member.key_type === 'institutional_admin' || member.can_clear_data !== false
   };
 }
 
