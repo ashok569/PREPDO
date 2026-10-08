@@ -1,4 +1,28 @@
 // PREPDO — settings.js
+// BUILD 57 | 2026-10-02
+// TEMPORARY credit-request provision. There is no email service yet, so
+// 'request-credits' records a user's top-up request on their own row
+// (credit_request_at / credit_request_note, migration_v27.sql) — User Setup
+// shows it as a tag against that user — and returns what the screen needs to
+// open a pre-written email to the administrator. The server cannot send mail
+// itself; the user presses Send in their own email app, and the in-app record
+// is the dependable part. One request per user at a time (a new one replaces
+// the old), so nothing can pile up. Refused for accounts with no credit limit.
+// get-my-settings also returns credit_request_at so the screen can say a
+// request is already pending. REMOVE this (and the two columns) once the real
+// email / notification system exists.
+//
+// BUILD 56 | 2026-09-29
+// Terms of Use. get-my-settings now includes a `terms` block (current version,
+// the version this user last accepted, and must_accept). New actions:
+// 'get-terms' returns the current version's full content (any logged-in user,
+// not admin-gated — same reasoning as get-industry-preview: reading it isn't
+// sensitive); 'accept-terms' records the version and timestamp on the caller's
+// own row, and is pinned to the CURRENT version — a stale or guessed version
+// number is rejected rather than silently accepted. platform_admin is exempt
+// from must_accept (their own account, not a real user needing to consent),
+// matching how they're already exempt from credits/expiry elsewhere.
+//
 // BUILD 55 | 2026-09-29
 // Custom (non-public) industries — for a bespoke, single-client document like
 // KBR's, which must never appear to an ordinary B2B user. industry_contexts
@@ -105,6 +129,11 @@
 const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions } = require('./_lib.js');
 const { describeAccess, industryRestriction } = require('./_access.js');
 
+async function currentTerms() {
+  const rows = await supaGet(`legal_documents?doc_type=eq.terms_of_use&order=version.desc&limit=1`);
+  return rows.length ? rows[0] : null;
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
   if (event.httpMethod !== 'POST') {
@@ -127,6 +156,8 @@ exports.handler = async function (event) {
     }
 
     if (action === 'get-my-settings') {
+      const terms = await currentTerms();
+      const exempt = member.key_type === 'platform_admin';
       return respond(200, {
         ok: true,
         user_segment: member.user_segment,
@@ -134,8 +165,36 @@ exports.handler = async function (event) {
         selling_company_website: member.selling_company_website,
         org_context_research: member.org_context_research,
         industry_context_id: member.industry_context_id,
-        access: describeAccess(member)
+        access: describeAccess(member),
+        credit_request_at: member.credit_request_at || null,
+        terms: {
+          current_version: terms ? terms.version : null,
+          accepted_version: member.terms_accepted_version || null,
+          accepted_at: member.terms_accepted_at || null,
+          must_accept: !exempt && !!terms && member.terms_accepted_version !== terms.version
+        }
       });
+    }
+
+    if (action === 'get-terms') {
+      const terms = await currentTerms();
+      if (!terms) {
+        return respond(404, { ok: false, message: 'No Terms of Use are published yet.' });
+      }
+      return respond(200, { ok: true, version: terms.version, content: terms.content, effective_date: terms.effective_date });
+    }
+
+    if (action === 'accept-terms') {
+      const terms = await currentTerms();
+      if (!terms) {
+        return respond(404, { ok: false, message: 'No Terms of Use are published yet.' });
+      }
+      const { version } = payload;
+      if (version !== terms.version) {
+        return respond(409, { ok: false, message: 'A newer version of the Terms of Use is now current — please review it again.', current_version: terms.version });
+      }
+      await supaPatch(`team_members?id=eq.${member.id}`, { terms_accepted_version: terms.version, terms_accepted_at: new Date().toISOString() });
+      return respond(200, { ok: true, accepted_version: terms.version });
     }
 
     if (action === 'update-my-segment') {
@@ -311,6 +370,30 @@ exports.handler = async function (event) {
       });
 
       return respond(200, { ok: true, org_context_research: researchText });
+    }
+
+    // TEMPORARY (Build 57) — see the header note. Remove with the email system.
+    if (action === 'request-credits') {
+      const access = describeAccess(member);
+      if (access.exempt || access.unlimited) {
+        return respond(400, { ok: false, message: 'Your account has no credit limit, so there is nothing to request.' });
+      }
+      const note = String(payload.note || '').trim().slice(0, 300) || null;
+      const requestedAt = new Date().toISOString();
+      await supaPatch(`team_members?id=eq.${member.id}`, { credit_request_at: requestedAt, credit_request_note: note });
+      return respond(200, {
+        ok: true,
+        request: {
+          email: member.email,
+          name: member.name || null,
+          plan_type: access.plan_type,
+          credits_remaining: access.credits_remaining,
+          credits_total: access.credits_total,
+          expires_on: access.expires_on,
+          note,
+          requested_at: requestedAt
+        }
+      });
     }
 
     if (action === 'set-english-only') {
