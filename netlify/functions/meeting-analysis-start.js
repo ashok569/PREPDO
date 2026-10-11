@@ -1,4 +1,11 @@
 // PREPDO — meeting-analysis-start.js
+// BUILD 24 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+// The report now takes the prospect's organization.
+//
 // BUILD 23 | 2026-09-28
 // Credits instead of runs: a Meeting Analysis costs PRICES.meeting_analysis
 // credits (an empty form still costs nothing — that check comes first). The
@@ -22,7 +29,7 @@
 // this time — checks the trigger response status, not just for a
 // thrown exception.
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, canActOn } = require('./_lib.js');
 const { checkAccess, charge, refund, linkLedger, PRICES } = require('./_access.js');
 
 exports.handler = async function (event) {
@@ -68,7 +75,7 @@ exports.handler = async function (event) {
     if (!prospectRows.length) {
       return respond(404, { ok: false, message: 'Prospect not found.' });
     }
-    if (!isInScope(member, prospectRows[0])) {
+    if (!canActOn(member, prospectRows[0])) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
 
@@ -85,7 +92,7 @@ exports.handler = async function (event) {
     const [report] = await supaPost('reports', {
       prospect_id,
       owner_id: member.id,
-      organization_id: member.organization_id || null,
+      organization_id: prospectRows[0].organization_id || member.organization_id || null,
       report_type: 'meeting_analysis',
       meeting_number: meeting.meeting_number || null,
       meeting_date: meeting.meeting_date || null,
