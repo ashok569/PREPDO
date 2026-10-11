@@ -1,222 +1,145 @@
-// PREPDO — prospects.js
-// BUILD 20 | 2026-10-11 (ships in the Build 89 package)
-// Access made to match the role model (needs _lib.js Build 89 and migration_v28.sql):
-//  - 'get' now has an ownership/scope check (it returned any prospect and its
-//    reports to anyone who knew the id). Same rule as every other action.
-//  - 'create' stores the creator's organization_id on the prospect (reports already
-//    carried it; prospects did not, so an admin could not see members' new prospects).
-//  - 'list' and 'list-my-roleplays' take an optional organization_id — the organization
-//    switcher — honoured only inside the caller's scope.
-//  - Who may touch the DATA of a prospect (backup, clear, restore, delete): its owner,
-//    the platform admin, or a client's own institutional admin for a prospect in THEIR
-//    organization. LMI staff (org_admin) can VIEW prospects in organizations they manage
-//    but cannot clear or delete other people's data. 'delete' used to accept anyone "in
-//    scope"; it now uses the same rule as clear.
-//  - The 'can_clear_data' switch is bypassed only by the platform admin and a client's
-//    institutional admin (for their own organization's prospects).
+// PREPDO — settings.js
+// BUILD 58 | 2026-10-11 (ships in the Build 89 package)
+// Industry access follows the role model (needs _lib.js 26): list-industries and
+// select-industry no longer treat an institutional admin as platform-level — only the
+// platform admin sees every industry; everyone else sees public ones plus those assigned
+// to them. get-industry-preview used to return ANY industry's content (including custom,
+// non-public ones such as KBR's) to anyone holding its id; it now requires the industry to
+// be public, assigned to the caller, or the one they already use (platform admin: all).
 //
-// BUILD 19 | 2026-10-08
-// Real bug fix in the existing 'delete' action (found by check_foreign_keys.sql):
-// it deleted reports FIRST and never touched report_backups or
-// iterative_research_sessions, but action_items, learnings, stalls_objections_log,
-// report_backups (all pointing at reports) and iterative_research_sessions (pointing
-// at the prospect) all BLOCK deletion. So deleting any prospect that had action items,
-// learnings, a backup or a Guided Research session would fail. It now clears those
-// first, in the same order clear-data uses (CLEAR_STEPS). clear-data is unchanged.
+// BUILD 57 | 2026-10-02
+// TEMPORARY credit-request provision. There is no email service yet, so
+// 'request-credits' records a user's top-up request on their own row
+// (credit_request_at / credit_request_note, migration_v27.sql) — User Setup
+// shows it as a tag against that user — and returns what the screen needs to
+// open a pre-written email to the administrator. The server cannot send mail
+// itself; the user presses Send in their own email app, and the in-app record
+// is the dependable part. One request per user at a time (a new one replaces
+// the old), so nothing can pile up. Refused for accounts with no credit limit.
+// get-my-settings also returns credit_request_at so the screen can say a
+// request is already pending. REMOVE this (and the two columns) once the real
+// email / notification system exists.
 //
-// BUILD 18 | 2026-10-02
-// Privacy: clearing a prospect's data from the cloud, with a backup and a way
-// back (migration_v27.sql). Three new actions:
-//  - 'backup-data': read-only. Everything held for one prospect (the prospect,
-//    its reports, and the rows in action_items / stalls_objections_log /
-//    learnings), for the screen to turn into a downloadable CSV.
-//  - 'clear-data': removes the prospect's reports and every row that points at
-//    them or at the prospect (action items, stall/objection entries, learnings,
-//    report backups, guided-research sessions) — children first, reports last,
-//    so a foreign key can't block it. The PROSPECT ROW and its own details
-//    (company, contact, notes) are deliberately left alone; it is only marked
-//    data_cleared_at so the list can say "nothing on the cloud". Refused unless
-//    the caller confirms they downloaded first (the server cannot see a
-//    browser download — this is the honest contract, the screen enforces the
-//    actual step). Allowed for the prospect's owner or a platform-level admin,
-//    and for the owner only while can_clear_data is not switched off for them.
-//  - 'restore-backup': loads the REPORTS from a backup back into a prospect
-//    that is currently cleared — new rows, new ids, original dates kept.
-//    Only into a cleared prospect with no reports (so a backup can't be loaded
-//    twice or on top of live data), only finished reports of the four known
-//    types, only known columns, size-capped, and all-or-nothing: if any row
-//    fails, the ones already inserted by that call are removed. Action items,
-//    stall/objection entries and learnings stay in the backup file but are not
-//    loaded back — nothing in the app reads those tables.
-// list/get also drop a stale "cleared" mark if the prospect has reports again
-// (a new run started), so the badge can never lie.
+// BUILD 56 | 2026-09-29
+// Terms of Use. get-my-settings now includes a `terms` block (current version,
+// the version this user last accepted, and must_accept). New actions:
+// 'get-terms' returns the current version's full content (any logged-in user,
+// not admin-gated — same reasoning as get-industry-preview: reading it isn't
+// sensitive); 'accept-terms' records the version and timestamp on the caller's
+// own row, and is pinned to the CURRENT version — a stale or guessed version
+// number is rejected rather than silently accepted. platform_admin is exempt
+// from must_accept (their own account, not a real user needing to consent),
+// matching how they're already exempt from credits/expiry elsewhere.
 //
-// BUILD 17 | 2026-10-02
-// Wildcard research: create now accepts and stores wildcard_query — the
-// field is already fetched by presales-research-start.js (select=*), so this
-// is the one piece that was missing for the setup wildcard to actually work
-// end to end (app.html Build 86 already sends it).
+// BUILD 55 | 2026-09-29
+// Custom (non-public) industries — for a bespoke, single-client document like
+// KBR's, which must never appear to an ordinary B2B user. industry_contexts
+// gained is_public (migration_v23.sql; existing rows default true, so nothing
+// already live changes). Two real gaps found while tracing this end to end,
+// consistent with this file's own stated rule of enforcing server-side, not
+// just hiding in the UI:
+//  - list-industries: an unrestricted caller previously saw the WHOLE table.
+//    Now: platform-level (platform_admin/institutional_admin) still sees
+//    everything; anyone else unrestricted sees only is_public rows. An
+//    org_admin is "anyone else" here even though they're not gated elsewhere
+//    in this file — they must never see or hand out a custom industry.
+//  - select-industry only checked the row EXISTED, never whether the caller
+//    was allowed to pick it — a non-public id could be set directly even
+//    though it was hidden from the dropdown. Now checked explicitly.
 //
-// BUILD 16 | 2026-09-06
-// Replaced all 5 admin-scope checks (2 list-query scopes, 3 single-
-// record ownership checks) with the new shared getScopeFilter()/
-// isInScope() from _lib.js — same real gap fix as everywhere else in
-// this pass: these were previously binary ("my own" vs. "everyone,
-// across every org"), with no way for an org_admin to see their own
-// org's prospects without seeing every other org's too. The 3 single-
-// record checks also needed their own select clauses widened to
-// include organization_id — isInScope can't evaluate org-level scope
-// on a record it was never given that column for.
+// BUILD 54 | 2026-09-28
+// Added 'credit_ledger' (migration_v22.sql) to the Full Data Backup table
+// list — the same gap Build 52 fixed for the tier tables: a new table is not
+// backed up unless it is named here.
 //
-// BUILD 15 | 2026-08-29
-// Added 'list-my-roleplays' — lists ALL roleplay reports, standalone
-// and prospect-tied alike, for the new Roleplay History view.
-// Standalone roleplays (prospect_id null) had no prospect page to
-// attach to and were genuinely invisible anywhere after the session
-// ended — confirmed as a real gap from actual use, not hypothetical.
-// Embeds the linked prospect's name via PostgREST's foreign-table
-// syntax where one exists; comes back null for standalone sessions.
+// BUILD 53 | 2026-09-24
+// Access levels / credits / industry restrictions / roleplay language.
+// get-my-settings now returns an `access` block (plan, expiry, credits
+// remaining and prices, Full vs Roleplay-only, allowed industries, English-only) so
+// the frontend can render limits and the credit balance. list-industries is
+// filtered to the user's allowed industries (platform_admin always sees
+// all — the library editor needs the full list). select-industry and
+// research-org-context are ENFORCED here, not just hidden in the UI: a
+// user locked to an industry cannot switch it, nor use the "Other"
+// route, which would clear it. New action 'set-english-only' backs the
+// roleplay language toggle.
 //
-// BUILD 14 | 2026-08-12
-// New: folder support (migration_v8.sql) — list now accepts an
-// optional folder_id filter (a real folder id, the literal string
-// 'unfiled' for prospects with no folder, or omitted entirely for the
-// unfiltered "All Prospects" view), and a new move-to-folder action
-// checks the target folder actually belongs to the requesting member
-// before filing a prospect into it — a crafted request shouldn't be
-// able to file into someone else's folder.
+// BUILD 52 | 2026-09-11
+// Real gap found via a direct backup-file inspection after today's
+// deploy: the 3 new tables from migration_v18.sql/v19.sql
+// (organizations, subscriptions, report_backups) were never added to
+// the export-all-data table list, despite existing and working
+// correctly (confirmed directly — the same backup that revealed the
+// gap also confirmed the tier rework and organization_id backfill had
+// landed correctly). Added all 3.
 //
-// BUILD 13 | 2026-08-10
-// New this build: delete (with cascading cleanup of dependent rows —
-// reports, action_items, stalls_objections_log, learnings — since
-// Postgres foreign keys would otherwise block deleting a prospect that
-// has any reports), archive/unarchive, and list now filters by the new
-// archived flag so archived prospects don't clutter the main list.
-// Both delete and archive/unarchive check ownership (or admin) before
-// acting, matching the same access rule already used for list/get.
-
-// /netlify/functions/prospects.js
+// BUILD 51 | 2026-09-06
+// Updated all 4 admin checks from 'admin' to 'platform_admin' — these
+// are genuine platform-wide tool-access checks (Industry Library,
+// segment switching, Full Data Backup), correctly staying exclusive to
+// that one tier rather than being converted to the new org-scoped
+// getScopeFilter()/isInScope() pattern used in prospects.js/roleplay-
+// turn.js, which is for record-level scoping, not platform-tool access.
 //
-// Handles Prospects: list (filtered to the logged-in user, or all for
-// admins; optionally archived-only), create, get-one (with its report
-// history), delete (permanent, cascades to dependent rows), archive,
-// and unarchive.
+// BUILD 50 | 2026-09-06
+// Added 'api_usage_log' to the Full Data Backup export table list —
+// the new real API usage tracking table (migration_v16.sql, built
+// alongside prompt caching in _lib.js) becomes reviewable through the
+// backup you already have, rather than needing a separate new UI.
 //
-// Request body always includes { session_token, action, ...fields }
+// BUILD 49 | 2026-08-16
+// Added 'export-all-data' — a temporary, manual full-database backup
+// for platform admin, given Supabase Free tier has zero automated
+// backups (confirmed directly). Dumps every table as one combined
+// JSON structure. Worth being honest about this being a stopgap, not
+// a real backup strategy — and about a real scaling ceiling: this
+// runs as a regular (non-background) function, so it will eventually
+// hit Netlify's response-size/execution-time limits if data volume
+// grows substantially. Fine for current, still-small scale; revisit
+// if/when that changes.
+//
+// BUILD 42 | 2026-08-14
+// Added 'get-industry-preview' — a genuinely public read action (NOT
+// admin-gated), for the two-column Settings redesign: a regular Non-
+// LMI user picking their own industry now sees a live preview of that
+// industry's content before saving. Deliberately separate from
+// 'admin-get-industry-content' below — viewing this content isn't
+// sensitive (the AI already uses it when generating that user's own
+// reports), only EDITING shared library content stays admin-only.
+//
+// BUILD 39 | 2026-08-14
+// Added the pre-built industry context library (migration_v12.sql/
+// migration_v13.sql). Three new actions:
+//   'list-industries' — names only, for the dropdown, open to any
+//     logged-in user (not admin-gated — same reasoning as
+//     research-org-context: this is a real Non-LMI user's own setup).
+//   'select-industry' — sets a Non-LMI user's industry_context_id +
+//     company name, skips the web-search research step entirely since
+//     the pre-built industry content does that job instead.
+//   'admin-get-industry-content' / 'admin-update-industry-content' —
+//     ADMIN-gated (unlike the two above) — this is genuinely editing
+//     shared library content every future Non-LMI user in that
+//     industry will see, not a personal setting, so it stays
+//     restricted the same way update-my-segment does.
+//
+// BUILD 36 | 2026-08-13
+// Real design correction made here: 'research-org-context' and
+// 'get-my-settings' below are deliberately NOT admin-gated, unlike
+// 'update-my-segment'. These are two genuinely different kinds of
+// setting — which methodology a user gets is an access-control
+// decision (stays admin-only, a real Non-LMI user shouldn't be able
+// to self-upgrade into LMI's proprietary methodology), but a Non-LMI
+// user's own selling-company context is them describing THEIR OWN
+// business, the SPIN-side equivalent of what LMI users get for free
+// from lmi-context.md. Gating that behind admin would mean a real
+// non-LMI user could never complete their own setup at all.
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope, canActOn } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions } = require('./_lib.js');
+const { describeAccess, industryRestriction } = require('./_access.js');
 
-const isPlatformAdmin = (m) => m.key_type === 'platform_admin';
-// Data actions (backup, clear, restore, delete): the prospect's owner, the platform
-// admin, or an institutional admin for a prospect in their OWN organization.
-const canManageData = (member, prospect) =>
-  prospect.owner_id === member.id
-  || isPlatformAdmin(member)
-  || (member.key_type === 'institutional_admin' && !!prospect.organization_id && prospect.organization_id === member.organization_id);
-
-// Tables whose rows must go before the reports can. [table, column that points at the PROSPECT or null, column that points at a REPORT or null]
-const CLEAR_STEPS = [
-  ['report_backups', null, 'report_id'],
-  ['action_items', 'prospect_id', 'report_id'],
-  ['stalls_objections_log', 'prospect_id', 'report_id'],
-  ['learnings', 'prospect_id', 'report_id'],
-  ['iterative_research_sessions', 'prospect_id', null]
-];
-const IN_CHUNK = 40; // ids per request, to keep URLs short
-
-async function selectIds(table, col, ids) {
-  let found = [];
-  for (let i = 0; i < ids.length; i += IN_CHUNK) {
-    const part = ids.slice(i, i + IN_CHUNK);
-    found = found.concat(await supaGet(`${table}?${col}=in.(${part.join(',')})&select=id`));
-  }
-  return found;
-}
-async function deleteIn(table, col, ids) {
-  for (let i = 0; i < ids.length; i += IN_CHUNK) {
-    await supaDelete(`${table}?${col}=in.(${ids.slice(i, i + IN_CHUNK).join(',')})`);
-  }
-}
-
-// Report restore: what may come back from a backup.
-const RESTORABLE_TYPES = ['presales_prep', 'presales_research', 'meeting_analysis', 'role_play'];
-const RESTORE_TEXT = ['confirmed_facts', 'ai_output_detailed', 'ai_output_summary', 'ai_output_extra', 'ai_output_ponder', 'ai_output_spin', 'ai_output_missed', 'ai_output_opportunities', 'ai_output_self_reflection', 'ai_output_client_perspective', 'ai_output_relationship', 'transcript_raw'];
-const RESTORE_NUMBERS = ['overall_score', 'probability_of_close'];
-const RESTORE_JSON = { recommended_actions: 'array', structured_data: 'object', conversation: 'array' };
-const INPUT_MODES = ['transcript', 'structured', 'both'];
-const MAX_RESTORE_REPORTS = 200;
-const MAX_TEXT_CHARS = 1000000;
-const MAX_JSON_CHARS = 2000000;
-
-// Returns a clean row to insert, or null if this report can't / shouldn't come back.
-function sanitizeReportForRestore(r) {
-  if (!r || typeof r !== 'object' || Array.isArray(r)) return null;
-  if (!RESTORABLE_TYPES.includes(r.report_type)) return null;
-  if (r.status && r.status !== 'complete') return null;
-  const out = { report_type: r.report_type };
-  for (const f of RESTORE_TEXT) {
-    const v = r[f];
-    if (v === undefined || v === null || v === '') continue;
-    if (typeof v !== 'string' || v.length > MAX_TEXT_CHARS) return null;
-    out[f] = v;
-  }
-  for (const f of RESTORE_NUMBERS) {
-    const v = r[f];
-    if (v === undefined || v === null || v === '') continue;
-    const n = Number(v);
-    if (Number.isFinite(n)) out[f] = n;
-  }
-  for (const [f, kind] of Object.entries(RESTORE_JSON)) {
-    let v = r[f];
-    if (v === undefined || v === null || v === '') continue;
-    if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return null; } }
-    const okShape = kind === 'array' ? Array.isArray(v) : (v && typeof v === 'object' && !Array.isArray(v));
-    if (!okShape) return null;
-    if (JSON.stringify(v).length > MAX_JSON_CHARS) return null;
-    out[f] = v;
-  }
-  if (r.meeting_number !== undefined && r.meeting_number !== null && r.meeting_number !== '') out.meeting_number = String(r.meeting_number).slice(0, 40);
-  if (typeof r.meeting_date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(r.meeting_date)) out.meeting_date = r.meeting_date.slice(0, 10);
-  if (INPUT_MODES.includes(r.input_mode)) out.input_mode = r.input_mode;
-  if (typeof r.created_at === 'string') {
-    const t = new Date(r.created_at).getTime();
-    if (Number.isFinite(t) && t <= Date.now()) out.created_at = new Date(t).toISOString();
-  }
-  return out;
-}
-
-// A prospect marked "cleared" that has reports again (a new run started) is no
-// longer empty — drop the stale mark. Never lets a failure here break a read.
-async function healClearedMarks(rows) {
-  try {
-    const marked = rows.filter((p) => p.data_cleared_at);
-    if (!marked.length) return rows;
-    const have = await supaGet(`reports?prospect_id=in.(${marked.map((p) => p.id).join(',')})&select=prospect_id`);
-    const stale = new Set(have.map((r) => r.prospect_id));
-    if (!stale.size) return rows;
-    await supaPatch(`prospects?id=in.(${[...stale].join(',')})`, { data_cleared_at: null, data_cleared_by: null });
-    return rows.map((p) => (stale.has(p.id) ? { ...p, data_cleared_at: null, data_cleared_by: null } : p));
-  } catch (e) {
-    return rows;
-  }
-}
-
-// For admins looking at other people's prospects: say whose each one is. Never lets a
-// failure here break the list.
-async function addOwnerLabels(member, rows) {
-  try {
-    const others = [...new Set(rows.map((r) => r.owner_id).filter((id) => id && id !== member.id))];
-    if (!others.length) return rows;
-    let people = [];
-    for (let i = 0; i < others.length; i += IN_CHUNK) {
-      people = people.concat(await supaGet(`team_members?id=in.(${others.slice(i, i + IN_CHUNK).join(',')})&select=id,name,email`));
-    }
-    const label = {};
-    people.forEach((t) => { label[t.id] = t.name || t.email; });
-    return rows.map((r) => (r.owner_id !== member.id && label[r.owner_id] ? { ...r, owner_label: label[r.owner_id] } : r));
-  } catch (e) {
-    return rows;
-  }
+async function currentTerms() {
+  const rows = await supaGet(`legal_documents?doc_type=eq.terms_of_use&order=version.desc&limit=1`);
+  return rows.length ? rows[0] : null;
 }
 
 exports.handler = async function (event) {
@@ -240,254 +163,267 @@ exports.handler = async function (event) {
       return respond(401, { ok: false, message: 'Not logged in. Please log in again.' });
     }
 
-    if (action === 'list') {
-      const scope = getScopeFilter(member, 'owner_id', payload.organization_id);
-      const archivedValue = payload.archived ? 'true' : 'false';
-      // folder_id filtering (BUILD 32): omit entirely for "All
-      // Prospects" (default, unfiltered by folder), pass a real folder
-      // id to see just that folder's prospects, or pass the literal
-      // string 'unfiled' to see prospects with no folder assigned.
-      let folderFilter = '';
-      if (payload.folder_id === 'unfiled') {
-        folderFilter = '&folder_id=is.null';
-      } else if (payload.folder_id) {
-        folderFilter = `&folder_id=eq.${payload.folder_id}`;
+    if (action === 'get-my-settings') {
+      const terms = await currentTerms();
+      const exempt = member.key_type === 'platform_admin';
+      return respond(200, {
+        ok: true,
+        user_segment: member.user_segment,
+        selling_company_name: member.selling_company_name,
+        selling_company_website: member.selling_company_website,
+        org_context_research: member.org_context_research,
+        industry_context_id: member.industry_context_id,
+        access: describeAccess(member),
+        credit_request_at: member.credit_request_at || null,
+        terms: {
+          current_version: terms ? terms.version : null,
+          accepted_version: member.terms_accepted_version || null,
+          accepted_at: member.terms_accepted_at || null,
+          must_accept: !exempt && !!terms && member.terms_accepted_version !== terms.version
+        }
+      });
+    }
+
+    if (action === 'get-terms') {
+      const terms = await currentTerms();
+      if (!terms) {
+        return respond(404, { ok: false, message: 'No Terms of Use are published yet.' });
       }
-      const rows = await supaGet(`prospects?select=*${scope}&archived=eq.${archivedValue}${folderFilter}&order=created_at.desc`);
-      let out = await healClearedMarks(rows);
-      if (member.key_type !== 'member') out = await addOwnerLabels(member, out);
-      return respond(200, { ok: true, prospects: out });
+      return respond(200, { ok: true, version: terms.version, content: terms.content, effective_date: terms.effective_date });
     }
 
-    if (action === 'list-my-roleplays') {
-      // BUILD 15: standalone roleplays (prospect_id null, migration_v15
-      // dropped the not-null constraint on it) have no prospect page to
-      // attach to — they were genuinely invisible anywhere after the
-      // session ended. This lists EVERY roleplay report, standalone and
-      // prospect-tied alike, for the new dedicated Roleplay History
-      // view. Embeds the linked prospect's company/contact name via
-      // PostgREST's foreign-table syntax where one exists; comes back
-      // null for standalone sessions, handled on the frontend.
-      const scope = getScopeFilter(member, 'owner_id', payload.organization_id);
-      const rows = await supaGet(`reports?report_type=eq.role_play&select=*,prospects(company_name,prospect_name)${scope}&order=created_at.desc`);
-      return respond(200, { ok: true, roleplays: rows });
+    if (action === 'accept-terms') {
+      const terms = await currentTerms();
+      if (!terms) {
+        return respond(404, { ok: false, message: 'No Terms of Use are published yet.' });
+      }
+      const { version } = payload;
+      if (version !== terms.version) {
+        return respond(409, { ok: false, message: 'A newer version of the Terms of Use is now current — please review it again.', current_version: terms.version });
+      }
+      await supaPatch(`team_members?id=eq.${member.id}`, { terms_accepted_version: terms.version, terms_accepted_at: new Date().toISOString() });
+      return respond(200, { ok: true, accepted_version: terms.version });
     }
 
-    if (action === 'create') {
-      const { company_name, company_website, prospect_name, linkedin_url, position, meeting_objective, notes, partner_or_salesperson_name, referred_by, linkedin_paste, prospect_name_2, position_2, linkedin_url_2, wildcard_query } = payload;
-      if (!company_name) {
+    if (action === 'update-my-segment') {
+      if (member.key_type !== 'platform_admin') {
+        return respond(403, { ok: false, message: 'Admin only.' });
+      }
+      const { segment } = payload;
+      if (segment !== 'lmi' && segment !== 'non_lmi') {
+        return respond(400, { ok: false, message: 'segment must be "lmi" or "non_lmi".' });
+      }
+      await supaPatch(`team_members?id=eq.${member.id}`, { user_segment: segment });
+      return respond(200, { ok: true, user_segment: segment });
+    }
+
+    if (action === 'list-industries') {
+      // Restricted users see only the industries their administrator
+      // allowed (custom or public — an explicit assignment always wins).
+      // An unrestricted caller sees only public industries, UNLESS they are
+      // platform-level, who see everything (the library editor, and the
+      // User Setup checklist, both need the full list).
+      const allowedIds = industryRestriction(member);
+      // BUILD 89: only the platform admin sees every industry. A client's own
+      // administrator (institutional_admin) and LMI staff (org_admin) see the public
+      // ones plus whatever they were assigned, like anyone else.
+      const platformLevel = member.key_type === 'platform_admin';
+      const filter = allowedIds ? `&id=in.(${allowedIds.join(',')})` : (platformLevel ? '' : '&is_public=eq.true');
+      const rows = await supaGet(`industry_contexts?select=id,industry_name&order=display_order.asc${filter}`);
+      return respond(200, { ok: true, industries: rows });
+    }
+
+    if (action === 'select-industry') {
+      const { industry_context_id, selling_company_name } = payload;
+      if (!industry_context_id) {
+        return respond(400, { ok: false, message: 'industry_context_id is required.' });
+      }
+      if (!selling_company_name || !selling_company_name.trim()) {
         return respond(400, { ok: false, message: 'Company name is required.' });
       }
-      const [row] = await supaPost('prospects', {
-        owner_id: member.id,
-        organization_id: member.organization_id || null,
-        company_name,
-        company_website: company_website || null,
-        prospect_name: prospect_name || null,
-        linkedin_url: linkedin_url || null,
-        position: position || null,
-        meeting_objective: meeting_objective || null,
-        notes: notes || null,
-        partner_or_salesperson_name: partner_or_salesperson_name || null,
-        referred_by: referred_by || null,
-        linkedin_paste: linkedin_paste || null,
-        prospect_name_2: prospect_name_2 || null,
-        position_2: position_2 || null,
-        linkedin_url_2: linkedin_url_2 || null,
-        wildcard_query: wildcard_query || null
+      const allowedIds = industryRestriction(member);
+      if (allowedIds && !allowedIds.includes(industry_context_id)) {
+        return respond(403, { ok: false, message: 'That industry is not available on your account.' });
+      }
+      // Confirm the industry exists AND, for an unrestricted non-platform-level
+      // caller, that it's public — enforced here, not just hidden from the
+      // dropdown (an id could otherwise be set directly, bypassing the UI).
+      const check = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id,is_public`);
+      if (!check.length) {
+        return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      const platformLevel = member.key_type === 'platform_admin';
+      if (!allowedIds && !platformLevel && !check[0].is_public) {
+        return respond(403, { ok: false, message: 'That industry is not available on your account.' });
+      }
+      await supaPatch(`team_members?id=eq.${member.id}`, {
+        industry_context_id,
+        selling_company_name: selling_company_name.trim()
       });
-      return respond(200, { ok: true, prospect: row });
-    }
-
-    if (action === 'get') {
-      const { prospect_id } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-
-      const rows = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
-      if (!rows.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!isInScope(member, rows[0])) {
-        return respond(403, { ok: false, message: 'Not authorized.' });
-      }
-
-      const reports = await supaGet(`reports?prospect_id=eq.${prospect_id}&select=*&order=created_at.desc`);
-      const [prospectOut] = reports.length ? await healClearedMarks(rows) : rows;
-      return respond(200, { ok: true, prospect: prospectOut, reports });
-    }
-
-    if (action === 'archive' || action === 'unarchive') {
-      const { prospect_id } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!canActOn(member, existing[0])) {
-        return respond(403, { ok: false, message: 'Not authorized.' });
-      }
-
-      await supaPatch(`prospects?id=eq.${prospect_id}`, { archived: action === 'archive' });
       return respond(200, { ok: true });
     }
 
-    if (action === 'move-to-folder') {
-      const { prospect_id, folder_id } = payload; // folder_id may be null (un-file)
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!canActOn(member, existing[0])) {
-        return respond(403, { ok: false, message: 'Not authorized.' });
+    if (action === 'get-industry-preview') {
+      // Deliberately NOT admin-gated, unlike admin-get-industry-content
+      // below — a regular Non-LMI user previewing an industry's content
+      // before selecting it isn't a sensitive operation (the AI already
+      // uses this exact content when generating their reports, so
+      // there's no real confidentiality reason to hide it from them).
+      // Only EDITING shared content stays admin-only.
+      const { industry_context_id } = payload;
+      if (!industry_context_id) {
+        return respond(400, { ok: false, message: 'industry_context_id is required.' });
       }
-
-      // If moving INTO a folder (not un-filing), confirm that folder
-      // actually belongs to this member — otherwise a crafted request
-      // could file a prospect into someone else's folder.
-      if (folder_id) {
-        const folderCheck = await supaGet(`folders?id=eq.${folder_id}&select=id,owner_id`);
-        if (!folderCheck.length || folderCheck[0].owner_id !== member.id) {
-          return respond(403, { ok: false, message: 'Not authorized to use this folder.' });
+      const rows = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id,is_public,context_content`);
+      if (!rows.length) {
+        return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      // BUILD 89: the preview used to return ANY industry's content to anyone who
+      // had its id, including custom (non-public) ones. Now it follows the same
+      // rule as the list: public, or assigned to this user, or the one they already
+      // use — and the platform admin sees all.
+      if (member.key_type !== 'platform_admin') {
+        const allowed = industryRestriction(member);
+        const mayView = rows[0].is_public
+          || (allowed && allowed.includes(rows[0].id))
+          || member.industry_context_id === rows[0].id;
+        if (!mayView) {
+          return respond(403, { ok: false, message: 'That industry is not available on your account.' });
         }
       }
+      return respond(200, { ok: true, context_content: rows[0].context_content });
+    }
 
-      await supaPatch(`prospects?id=eq.${prospect_id}`, { folder_id: folder_id || null });
+    if (action === 'admin-get-industry-content') {
+      if (member.key_type !== 'platform_admin') {
+        return respond(403, { ok: false, message: 'Admin only.' });
+      }
+      const { industry_context_id } = payload;
+      if (!industry_context_id) {
+        return respond(400, { ok: false, message: 'industry_context_id is required.' });
+      }
+      const rows = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=*`);
+      if (!rows.length) {
+        return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      return respond(200, { ok: true, industry: rows[0] });
+    }
+
+    if (action === 'admin-update-industry-content') {
+      if (member.key_type !== 'platform_admin') {
+        return respond(403, { ok: false, message: 'Admin only.' });
+      }
+      const { industry_context_id, context_content } = payload;
+      if (!industry_context_id || !context_content || !context_content.trim()) {
+        return respond(400, { ok: false, message: 'industry_context_id and context_content are both required.' });
+      }
+      await supaPatch(`industry_contexts?id=eq.${industry_context_id}`, {
+        context_content: context_content.trim(),
+        updated_at: new Date().toISOString()
+      });
       return respond(200, { ok: true });
     }
 
-    if (action === 'delete') {
-      const { prospect_id } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!canManageData(member, existing[0])) {
-        return respond(403, { ok: false, message: 'Not authorized.' });
+    if (action === 'export-all-data') {
+      // Temporary measure — Supabase Free tier has zero automated
+      // backups (confirmed directly, not assumed). This is a stopgap
+      // manual export, not a substitute for actually moving to a
+      // tier with real backups when that becomes the priority it
+      // should be. Dumps every table as one combined JSON structure —
+      // simplest reliable format, preserves exact data types
+      // (including jsonb columns) faithfully, at the cost of not
+      // being directly Excel-readable. A CSV-per-table version would
+      // be a reasonable future upgrade if that's ever actually needed.
+      if (member.key_type !== 'platform_admin') {
+        return respond(403, { ok: false, message: 'Admin only.' });
       }
-
-      // Dependent rows have to go first — Postgres foreign keys BLOCK the delete
-      // otherwise. Same children-before-reports order as clear-data (CLEAR_STEPS):
-      // report_backups, action_items, stalls_objections_log, learnings and
-      // iterative_research_sessions all point at the prospect or its reports.
-      const delReportIds = (await supaGet(`reports?prospect_id=eq.${prospect_id}&select=id`)).map((r) => r.id);
-      for (const [table, prospectCol, reportCol] of CLEAR_STEPS) {
-        if (prospectCol) await supaDelete(`${table}?${prospectCol}=eq.${prospect_id}`);
-        if (reportCol && delReportIds.length) await deleteIn(table, reportCol, delReportIds);
+      const tables = ['team_members', 'prospects', 'reports', 'folders', 'industry_contexts', 'action_items', 'stalls_objections_log', 'learnings', 'api_usage_log', 'organizations', 'subscriptions', 'report_backups', 'credit_ledger'];
+      const dump = { exported_at: new Date().toISOString(), tables: {} };
+      for (const table of tables) {
+        try {
+          dump.tables[table] = await supaGet(`${table}?select=*`);
+        } catch (err) {
+          // A missing/inaccessible table shouldn't abort the whole
+          // export — record the failure and keep going, so a real
+          // backup attempt doesn't come back completely empty over
+          // one bad table.
+          dump.tables[table] = { error: err.message };
+        }
       }
-      await supaDelete(`reports?prospect_id=eq.${prospect_id}`);
-      await supaDelete(`prospects?id=eq.${prospect_id}`);
-
-      return respond(200, { ok: true });
+      return respond(200, { ok: true, dump });
     }
 
-    if (action === 'backup-data') {
-      const { prospect_id } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!canManageData(member, existing[0])) return respond(403, { ok: false, message: 'Not authorized.' });
-
-      const reports = await supaGet(`reports?prospect_id=eq.${prospect_id}&select=*&order=created_at.asc`);
-      const [actionItems, stallsObjections, learnings] = await Promise.all([
-        supaGet(`action_items?prospect_id=eq.${prospect_id}&select=*`),
-        supaGet(`stalls_objections_log?prospect_id=eq.${prospect_id}&select=*`),
-        supaGet(`learnings?prospect_id=eq.${prospect_id}&select=*`)
-      ]);
-      return respond(200, { ok: true, prospect: existing[0], reports, action_items: actionItems, stalls_objections: stallsObjections, learnings });
-    }
-
-    if (action === 'clear-data') {
-      const { prospect_id, confirm_downloaded } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      const prospect = existing[0];
-      if (!canManageData(member, prospect)) return respond(403, { ok: false, message: 'Not authorized.' });
-      const bypassesSwitch = isPlatformAdmin(member) || member.key_type === 'institutional_admin';
-      if (!bypassesSwitch && member.can_clear_data === false) {
-        return respond(403, { ok: false, message: 'Your administrator has turned off data clearing for your account.' });
+    if (action === 'research-org-context') {
+      // This route clears industry_context_id, which would bypass an
+      // administrator-set industry — so it is closed to restricted users.
+      if (industryRestriction(member)) {
+        return respond(403, { ok: false, message: 'Your industry is set by your administrator.' });
       }
-      if (confirm_downloaded !== true) {
-        return respond(400, { ok: false, message: 'Download your reports first, and confirm you have saved them, before clearing.' });
+      const { selling_company_name, selling_company_website } = payload;
+      if (!selling_company_name || !selling_company_name.trim()) {
+        return respond(400, { ok: false, message: 'Company name is required.' });
       }
 
-      const reportIds = (await supaGet(`reports?prospect_id=eq.${prospect_id}&select=id`)).map((r) => r.id);
-
-      // Count first (the delete call's own return value isn't something this relies on),
-      // then delete children before the reports they point at.
-      const cleared = {};
+      let researchText;
       try {
-        for (const [table, prospectCol, reportCol] of CLEAR_STEPS) {
-          const ids = new Set();
-          if (prospectCol) (await supaGet(`${table}?${prospectCol}=eq.${prospect_id}&select=id`)).forEach((r) => ids.add(r.id));
-          if (reportCol && reportIds.length) (await selectIds(table, reportCol, reportIds)).forEach((r) => ids.add(r.id));
-          cleared[table] = ids.size;
-          if (prospectCol) await supaDelete(`${table}?${prospectCol}=eq.${prospect_id}`);
-          if (reportCol && reportIds.length) await deleteIn(table, reportCol, reportIds);
-        }
-        cleared.reports = reportIds.length;
-        if (reportIds.length) await supaDelete(`reports?prospect_id=eq.${prospect_id}`);
+        const res = await callClaude({
+          model: 'claude-haiku-4-5-20251001',
+          system: `You are doing one small piece of research to help a salesperson's AI sales-coaching tool understand THEIR OWN employer's business — not a prospect, their own company. Use web search — exactly one search — to find out what this company sells, who they typically sell to, and the general nature of their offering (e.g. software, consultancy, professional services, a physical product). Return 3-5 short bulleted markdown facts. If search turns up nothing useful, say plainly "Nothing specific found — proceed with the company name and website alone as context." Keep it brief and factual, not speculative.`,
+          messages: [{
+            role: 'user',
+            content: `Company: ${selling_company_name}\nWebsite: ${selling_company_website || '(not provided)'}`
+          }],
+          tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 1 }],
+          max_tokens: 600
+        });
+        await logApiUsage({ member_id: member.id, report_id: null, function_name: 'settings', action: 'research-org-context', model: res.model, claudeResponse: res });
+        researchText = extractText(res) || 'Nothing specific found — proceed with the company name and website alone as context.';
       } catch (err) {
-        // Nothing is marked cleared, and running it again is safe.
-        return respond(500, { ok: false, message: 'Could not finish clearing — some data may already have been removed. It is safe to try again. (' + err.message + ')' });
+        researchText = 'Research failed (' + err.message + ') — proceed with the company name and website alone as context.';
       }
 
-      const markedAt = new Date().toISOString();
-      await supaPatch(`prospects?id=eq.${prospect_id}`, { data_cleared_at: markedAt, data_cleared_by: member.id });
-      return respond(200, { ok: true, cleared, data_cleared_at: markedAt });
+      // Choosing "Other"/company-specific research clears any
+      // previously-selected pre-built industry, so the two paths don't
+      // silently coexist in a confusing way — the user chose a
+      // different setup path this time.
+      await supaPatch(`team_members?id=eq.${member.id}`, {
+        selling_company_name: selling_company_name.trim(),
+        selling_company_website: (selling_company_website || '').trim() || null,
+        org_context_research: researchText,
+        industry_context_id: null
+      });
+
+      return respond(200, { ok: true, org_context_research: researchText });
     }
 
-    if (action === 'restore-backup') {
-      const { prospect_id, reports } = payload;
-      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
-      if (!Array.isArray(reports) || reports.length === 0) {
-        return respond(400, { ok: false, message: 'The backup contains no reports to load.' });
+    // TEMPORARY (Build 57) — see the header note. Remove with the email system.
+    if (action === 'request-credits') {
+      const access = describeAccess(member);
+      if (access.exempt || access.unlimited) {
+        return respond(400, { ok: false, message: 'Your account has no credit limit, so there is nothing to request.' });
       }
-      if (reports.length > MAX_RESTORE_REPORTS) {
-        return respond(400, { ok: false, message: 'That backup has too many reports to load in one go.' });
-      }
-      const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
-      if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      const prospect = existing[0];
-      if (!canManageData(member, prospect)) return respond(403, { ok: false, message: 'Not authorized.' });
-      if (!prospect.data_cleared_at) {
-        return respond(409, { ok: false, message: 'This prospect still has its data in PREPDO. A backup can only be loaded into a prospect whose data has been cleared.' });
-      }
-      const present = await supaGet(`reports?prospect_id=eq.${prospect_id}&select=id&limit=1`);
-      if (present.length) {
-        return respond(409, { ok: false, message: 'This prospect already has reports, so a backup cannot be loaded into it.' });
-      }
-
-      const clean = [];
-      let skipped = 0;
-      for (const r of reports) {
-        const row = sanitizeReportForRestore(r);
-        if (row) clean.push(row); else skipped++;
-      }
-      if (!clean.length) {
-        return respond(400, { ok: false, message: 'None of the reports in that backup could be loaded.' });
-      }
-      // Oldest first, so the restored history keeps its order.
-      clean.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
-
-      const insertedIds = [];
-      try {
-        for (const row of clean) {
-          const [created] = await supaPost('reports', {
-            ...row,
-            prospect_id,
-            owner_id: prospect.owner_id,
-            organization_id: prospect.organization_id || (prospect.owner_id === member.id ? member.organization_id : null) || null,
-            status: 'complete'
-          });
-          insertedIds.push(created.id);
+      const note = String(payload.note || '').trim().slice(0, 300) || null;
+      const requestedAt = new Date().toISOString();
+      await supaPatch(`team_members?id=eq.${member.id}`, { credit_request_at: requestedAt, credit_request_note: note });
+      return respond(200, {
+        ok: true,
+        request: {
+          email: member.email,
+          name: member.name || null,
+          plan_type: access.plan_type,
+          credits_remaining: access.credits_remaining,
+          credits_total: access.credits_total,
+          expires_on: access.expires_on,
+          note,
+          requested_at: requestedAt
         }
-      } catch (err) {
-        for (const id of insertedIds) {
-          try { await supaDelete(`reports?id=eq.${id}`); } catch (e) { /* best effort */ }
-        }
-        return respond(500, { ok: false, message: 'Could not load the backup — nothing was changed. (' + err.message + ')' });
-      }
+      });
+    }
 
-      await supaPatch(`prospects?id=eq.${prospect_id}`, { data_cleared_at: null, data_cleared_by: null });
-      return respond(200, { ok: true, restored: insertedIds.length, skipped });
+    if (action === 'set-english-only') {
+      const value = payload.english_only === true;
+      await supaPatch(`team_members?id=eq.${member.id}`, { english_only: value });
+      return respond(200, { ok: true, english_only: value });
     }
 
     return respond(400, { ok: false, message: 'Unknown action: ' + action });
