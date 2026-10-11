@@ -1,4 +1,31 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 46 | 2026-10-11 (ships with the Build 89 package)
+// The debrief's one Claude call now has 180 seconds instead of the 90-second default.
+// A live debrief hit "Anthropic API call timed out after 90s" — this is the largest call
+// in the app (full methodology file + the whole conversation + a long answer) and, as a
+// background function, it can safely wait longer. A failed debrief can now also be tried
+// again from the screen (app.html 89).
+//
+// BUILD 45 | 2026-09-29
+// Relationship Building — a new section alongside the technique analysis.
+// SPIN/LMI stages model the event (a single meeting); this looks at signals
+// that belong to the wider sales journey: Courtesy, Personal Opening, Access,
+// Trust, and Personal Advocacy, plus Unsolicited Information (something
+// volunteered that the salesperson should explore rather than pitch
+// immediately). Saved to reports.ai_output_relationship — a column shared
+// with Meeting Analysis (migration_v25.sql), since the same instruction
+// applies to both a real meeting and a practice conversation.
+//
+// BUILD 44 | 2026-09-29
+// If the active industry context describes its own opportunity-recognition or
+// evaluation framework (for example KBR's expansion lenses and signal-pursuit
+// chain, added to its industry_contexts row alongside the persona-facing
+// content), the evaluator now judges against it too, in that framework's own
+// terms — generic, so any future industry document with its own framework
+// gets the same benefit without a code change. Industries with no such
+// section see no difference: the instruction only asks the model to use what
+// is actually present in the context it already has.
+//
 // BUILD 43 | 2026-09-28
 // The debrief charges PRICES.roleplay_debrief credits once it has been generated
 // (beta rule: allowNegative — the session it belongs to is always allowed to
@@ -224,6 +251,8 @@ ${transcript}
 Using the sales context above, evaluate the SALESPERSON's performance in this practice conversation (not the AI-played prospect — that side was just simulation for practice).
 
 DIFFICULTY LEVEL: the scenario's "difficulty" field says how the simulated prospect was set to behave — judge the salesperson against THAT, not against an easier conversation.
+
+INDUSTRY-SPECIFIC FRAMEWORK: if the industry context above includes its own opportunity-recognition or evaluation framework (its own named stages, a signal-pursuit sequence, a sizing model, or similar), judge the conversation against that framework as well as the standard stages, using its own terms — for example, did the salesperson notice a signal, pursue it the way that framework describes, and judge its scale correctly? Fold this into Detailed and Next Practice using the framework's own language rather than generic SPIN/LMI terms. If the industry context has no such framework, ignore this and evaluate only on the standard stages below.
 - "reserved": the prospect deliberately volunteered very little and opened up only to good discovery. Little information coming back is EXPECTED and is not itself a failure. Judge the QUALITY of the questioning: did the salesperson ask open, specific questions, build on what was just said, probe consequences and numbers, and draw information out — or did they ask closed/generic questions, pitch early, or fail to follow up? Credit real discovery; call out missed follow-ups.
 - "tough": the prospect pushed back with objections and stalls. Judge how the salesperson handled each stall and objection — did they explore what was behind it, or fold, argue, or pitch harder?
 - "supportive" (or unspecified): a cooperative prospect; judge the fundamentals of the conversation on their merits.
@@ -243,13 +272,20 @@ Then a blank line, then 2-3 sentences of reasoning grounded in specific, named m
 ### NEXT_PRACTICE
 A bulleted list of 3-5 specific, concrete things to practice next — tied to what actually happened in THIS conversation (e.g. a specific objection that could have been handled better, a transition that was rushed, a Need-Payoff that never got verbalised) — not generic sales advice.
 
+### RELATIONSHIP_BUILDING
+Alongside the technique analysis above, look for relationship-building signals — moments that move the relationship beyond the immediate exchange. These fall into five levels: Courtesy (baseline politeness — not itself a signal), Personal Opening (moving from task to person — where are you based, how long have you done this), Access (an invitation to meet someone else, expanding the relationship's reach), Trust (the other person asks for an opinion, help, or advice outside the immediate scope), and Personal Advocacy (the other person starts recommending or vouching for the salesperson to someone else). Also watch for Unsolicited Information — the other person volunteers something (a plan, a problem, a change) without being asked; note whether the salesperson resisted pitching immediately and instead explored it ("tell me more about that").
+Respond with two parts:
+**What went well** — a short synthesis of genuine relationship-building moments actually present in the conversation, organized by level where relevant. If little or nothing of this kind occurred, say so plainly rather than manufacturing examples.
+**Extracts** — for each moment named above, a short, exact quote from the conversation (a sentence or two) showing what was actually said, labeled with which level it represents.
+
 ### POINTS_TO_PONDER
 (a neutral reflection space for genuine ambiguity or a tentative hunch about this practice session. May be brief, or state plainly that nothing further needs flagging — never manufacture content just to fill this section.)`;
 
     const res = await callClaude({
       system: buildCacheableSystem(METHODOLOGY_CONTEXT),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 3500
+      max_tokens: 4200, // raised: a new RELATIONSHIP_BUILDING section shares this call's budget
+      timeoutMs: 180000 // BUILD 46: 3 minutes — a background function may wait longer than the 90s default
     });
     await logApiUsage({ member_id: member.id, report_id, function_name: 'roleplay-debrief-background', action: 'debrief', model: res.model, claudeResponse: res });
     try {
@@ -258,7 +294,7 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
       console.error('debrief charge failed (non-fatal):', chargeErr.message);
     }
 
-    const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE', 'NEXT_PRACTICE', 'POINTS_TO_PONDER']);
+    const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE', 'RELATIONSHIP_BUILDING', 'NEXT_PRACTICE', 'POINTS_TO_PONDER']);
     const scoreParsed = extractLeadingNumber(sections.OVERALL_SCORE, 'SCORE');
 
     const detailed = (sections.DETAILED || '(not generated)') +
@@ -274,6 +310,7 @@ A bulleted list of 3-5 specific, concrete things to practice next — tied to wh
       ai_output_summary: sections.SUMMARY || '(not generated)',
       overall_score: scoreParsed.number,
       recommended_actions: nextPracticeArray,
+      ai_output_relationship: sections.RELATIONSHIP_BUILDING || '',
       ai_output_ponder: sections.POINTS_TO_PONDER || '',
       status: 'complete'
     });
