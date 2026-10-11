@@ -1,5 +1,10 @@
 // PREPDO — roleplay-debrief-background.js
-// BUILD 46 | 2026-10-11 (ships with the Build 89 package)
+// BUILD 47 | 2026-10-11 (ships with the Build 89 package)
+// The credit is now charged only AFTER the debrief has been saved. Before, it was charged
+// first, so a debrief that was generated but could not be saved (a missing database column)
+// still cost a credit on every attempt.
+//
+// BUILD 46 | 2026-10-11
 // The debrief's one Claude call now has 180 seconds instead of the 90-second default.
 // A live debrief hit "Anthropic API call timed out after 90s" — this is the largest call
 // in the app (full methodology file + the whole conversation + a long answer) and, as a
@@ -288,12 +293,6 @@ Respond with two parts:
       timeoutMs: 180000 // BUILD 46: 3 minutes — a background function may wait longer than the 90s default
     });
     await logApiUsage({ member_id: member.id, report_id, function_name: 'roleplay-debrief-background', action: 'debrief', model: res.model, claudeResponse: res });
-    try {
-      await charge(member, 'roleplay_debrief', { allowNegative: true, reportId: report_id });
-    } catch (chargeErr) {
-      console.error('debrief charge failed (non-fatal):', chargeErr.message);
-    }
-
     const sections = parseMarkers(extractText(res), ['DETAILED', 'SUMMARY', 'OVERALL_SCORE', 'RELATIONSHIP_BUILDING', 'NEXT_PRACTICE', 'POINTS_TO_PONDER']);
     const scoreParsed = extractLeadingNumber(sections.OVERALL_SCORE, 'SCORE');
 
@@ -314,6 +313,13 @@ Respond with two parts:
       ai_output_ponder: sections.POINTS_TO_PONDER || '',
       status: 'complete'
     });
+
+    // BUILD 47: charged only now that the debrief is safely saved.
+    try {
+      await charge(member, 'roleplay_debrief', { allowNegative: true, reportId: report_id });
+    } catch (chargeErr) {
+      console.error('debrief charge failed (non-fatal):', chargeErr.message);
+    }
 
     return { statusCode: 200, body: 'done' };
   } catch (err) {
