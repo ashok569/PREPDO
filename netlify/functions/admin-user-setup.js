@@ -1,4 +1,29 @@
 // PREPDO — admin-user-setup.js
+// BUILD 9 | 2026-10-11 (ships in the Build 89 package)
+// Roles made to match the real model (nothing here widens anyone's access):
+//  - platform_admin: everything. Only this tier may create organizations, change a
+//    pool, extend a subscription, run the ledger check, or assign an org admin's
+//    organizations.
+//  - org_admin (LMI staff): works inside the organizations on their managed list
+//    (admin_organizations, set by the platform admin) plus their home organization.
+//    Can create and deactivate users there and, for pooled organizations, hand out
+//    credits from the pool. Cannot create admins.
+//  - institutional_admin (a client's own administrator): confined to THEIR OWN
+//    organization everywhere. Previously this tier was treated as platform-level
+//    (could list every organization and user, create organizations, change pools,
+//    add credits to anyone). That is closed. They allocate credits to their users
+//    out of their pool only, and cannot raise the pool.
+//  - Credits on an account that has no pool (an individual/B2C user, or a company
+//    without a pool) can only be added by the platform admin.
+//  - New: create-user can create a B2C user together with a personal organization
+//    named after them (new_individual: true). An individual organization holds one
+//    user, no admin, no pool.
+//  - New: set-admin-organizations (platform admin only) sets an org admin's list.
+//  - list-users and list-organizations accept an optional organization_id (the
+//    organization switcher) and only ever return what the caller may see.
+//  - A non-platform admin may assign an industry only if it is public or one that
+//    admin has been given themselves.
+//
 // BUILD 8 | 2026-10-02
 // Privacy and the temporary credit-request marker (migration_v27.sql):
 //  - create-user and adjust-user take can_clear_data (true/false) — whether a
@@ -110,10 +135,18 @@
 // organization_id.
 
 const crypto = require('crypto');
-const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, hashToken, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, hashToken, respond, handleOptions, scopeOrgIds, canAdministerOrg } = require('./_lib.js');
 const { creditsRemaining, round2, tryLedger } = require('./_access.js');
 
 const TIER_RANK = { member: 0, org_admin: 1, institutional_admin: 2, platform_admin: 3 };
+// Which tiers each tier may create. Only the platform admin creates admins of any
+// kind except a client's own peer administrators.
+const GRANTABLE = {
+  platform_admin: ['member', 'org_admin', 'institutional_admin'],
+  institutional_admin: ['member', 'institutional_admin'],
+  org_admin: ['member']
+};
+const FREE_PLANS = ['free_1m', 'free_3m'];
 
 // Credits per plan — the one place to change them. 1 credit = $0.10 of AI cost.
 const PLANS = {
@@ -241,12 +274,22 @@ exports.handler = async function (event) {
     if (member.key_type === 'member') {
       return respond(403, { ok: false, message: 'Admin only.' });
     }
-    const platformLevel = member.key_type === 'platform_admin' || member.key_type === 'institutional_admin';
+    const isPlatform = member.key_type === 'platform_admin';
+    const isInstitutional = member.key_type === 'institutional_admin';
+    const isOrgAdmin = member.key_type === 'org_admin';
+    const inScope = (orgId) => canAdministerOrg(member, orgId);
+    const OUT_OF_SCOPE = 'That is outside the organizations you manage.';
 
     if (action === 'list-organizations') {
-      const rows = platformLevel
-        ? await supaGet(`organizations?select=id,name,type,default_user_segment,credit_pool&order=name.asc`)
-        : await supaGet(`organizations?id=eq.${member.organization_id}&select=id,name,type,default_user_segment,credit_pool`);
+      let rows;
+      if (isPlatform) {
+        rows = await supaGet(`organizations?select=id,name,type,default_user_segment,credit_pool&order=name.asc`);
+      } else {
+        const ids = scopeOrgIds(member);
+        rows = ids.length
+          ? await supaGet(`organizations?id=in.(${ids.join(',')})&select=id,name,type,default_user_segment,credit_pool&order=name.asc`)
+          : [];
+      }
       // For pooled organizations, show how much of the pool is already allocated.
       const withAlloc = [];
       for (const o of rows) {
@@ -258,8 +301,8 @@ exports.handler = async function (event) {
     }
 
     if (action === 'create-organization') {
-      if (!platformLevel) {
-        return respond(403, { ok: false, message: 'Only platform or institutional admins can create new organizations.' });
+      if (!isPlatform) {
+        return respond(403, { ok: false, message: 'Only the platform admin can create new organizations.' });
       }
       const { name, type, default_user_segment, credit_pool } = payload;
       if (!name || !name.trim()) {
@@ -274,6 +317,9 @@ exports.handler = async function (event) {
 
       let pool = null;
       if (credit_pool !== undefined && credit_pool !== null && credit_pool !== '') {
+        if (type === 'individual') {
+          return respond(400, { ok: false, message: 'An individual (personal) account has no pool — its user\'s own credits are topped up directly.' });
+        }
         const n = Number(credit_pool);
         if (!Number.isFinite(n) || n < 0 || n > MAX_CREDITS) {
           return respond(400, { ok: false, message: 'The credit pool must be a number of credits (0 or more), or left blank for no pool.' });
@@ -298,15 +344,18 @@ exports.handler = async function (event) {
     }
 
     if (action === 'set-org-pool') {
-      if (!platformLevel) {
-        return respond(403, { ok: false, message: 'Only platform or institutional admins can change an organization\'s pool.' });
+      if (!isPlatform) {
+        return respond(403, { ok: false, message: 'Only the platform admin can change an organization\'s pool. Ask for a top-up instead.' });
       }
       const { organization_id, credit_pool } = payload;
       if (!organization_id || !UUID_RE.test(organization_id)) {
         return respond(400, { ok: false, message: 'A valid organization is required.' });
       }
-      const orgs = await supaGet(`organizations?id=eq.${organization_id}&select=id`);
+      const orgs = await supaGet(`organizations?id=eq.${organization_id}&select=id,type`);
       if (!orgs.length) return respond(404, { ok: false, message: 'Organization not found.' });
+      if (orgs[0].type === 'individual' && credit_pool !== null && credit_pool !== undefined && credit_pool !== '') {
+        return respond(400, { ok: false, message: 'An individual (personal) account has no pool — top up the user\'s own credits instead.' });
+      }
       let pool = null;
       if (credit_pool !== null && credit_pool !== undefined && credit_pool !== '') {
         const n = Number(credit_pool);
@@ -325,7 +374,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'create-user') {
-      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids, name, can_clear_data } = payload;
+      const { email, key_type, user_segment, organization_id, access_level, plan, credits_total: creditsOverride, industry_ids, name, can_clear_data, new_individual } = payload;
       if (!email || !email.trim()) {
         return respond(400, { ok: false, message: 'Email is required.' });
       }
@@ -342,9 +391,6 @@ exports.handler = async function (event) {
       if (user_segment !== 'lmi' && user_segment !== 'non_lmi') {
         return respond(400, { ok: false, message: 'user_segment must be "lmi" or "non_lmi".' });
       }
-      if (!organization_id) {
-        return respond(400, { ok: false, message: 'organization_id is required.' });
-      }
       const level = access_level || 'full';
       if (level !== 'full' && level !== 'roleplay_only') {
         return respond(400, { ok: false, message: 'access_level must be "full" or "roleplay_only".' });
@@ -354,30 +400,79 @@ exports.handler = async function (event) {
         return respond(400, { ok: false, message: 'Choose a plan for this user.' });
       }
 
-      // Tier rule: never grant above your own tier; platform_admin is never
-      // created through this tool; org_admin stays inside their own org.
+      // Tier rule: platform_admin is never created through this tool, and each
+      // tier may only create the tiers listed in GRANTABLE.
       if (key_type === 'platform_admin') {
         return respond(403, { ok: false, message: 'platform_admin can only be created via a direct database action, never through this tool.' });
       }
-      if (TIER_RANK[key_type] > TIER_RANK[member.key_type]) {
-        return respond(403, { ok: false, message: `You cannot grant a tier above your own (${member.key_type}).` });
-      }
-      if (member.key_type === 'org_admin' && organization_id !== member.organization_id) {
-        return respond(403, { ok: false, message: 'You can only create users within your own organization.' });
+      if (!GRANTABLE[member.key_type].includes(key_type)) {
+        return respond(403, { ok: false, message: `Your account cannot create a ${key_type}.` });
       }
 
-      // Contained-spend rule: only platform-level admins may hand out the
-      // bigger plans or change the run allowance.
-      if (!platformLevel) {
-        if (plan !== 'free_1m' && plan !== 'free_3m') {
-          return respond(403, { ok: false, message: 'Your account can create users on the free plans only.' });
+      // Which organization: an existing one you manage, or (B2C) a brand-new
+      // personal organization named after the person.
+      const makingIndividual = new_individual === true;
+      if (makingIndividual) {
+        if (!isPlatform && !isOrgAdmin) {
+          return respond(403, { ok: false, message: 'Only the platform admin or LMI staff can create an individual (B2C) account.' });
         }
-        if (creditsOverride !== undefined && creditsOverride !== null && creditsOverride !== '') {
-          return respond(403, { ok: false, message: 'Your account cannot change the credit allowance.' });
+        if (key_type !== 'member') {
+          return respond(400, { ok: false, message: 'An individual account is a single member — it cannot be an admin.' });
+        }
+        if (!cleanName) {
+          return respond(400, { ok: false, message: 'Enter the person\'s name — their personal account is named after them.' });
+        }
+        if (organization_id) {
+          return respond(400, { ok: false, message: 'Choose either an existing organization or a new individual account, not both.' });
+        }
+      } else {
+        if (!organization_id || !UUID_RE.test(organization_id)) {
+          return respond(400, { ok: false, message: 'organization_id is required.' });
+        }
+        if (!isPlatform && !inScope(organization_id)) {
+          return respond(403, { ok: false, message: OUT_OF_SCOPE });
+        }
+      }
+
+      let orgRow = null;
+      if (!makingIndividual) {
+        const orgCheck = await supaGet(`organizations?id=eq.${organization_id}&select=id,type,credit_pool`);
+        if (!orgCheck.length) {
+          return respond(404, { ok: false, message: 'Organization not found.' });
+        }
+        orgRow = orgCheck[0];
+      }
+      const isIndividualOrg = makingIndividual || (orgRow && orgRow.type === 'individual');
+      const pooled = !!(orgRow && orgRow.credit_pool != null);
+      if (isIndividualOrg && !makingIndividual) {
+        if (key_type !== 'member') {
+          return respond(400, { ok: false, message: 'An individual account is a single member — it cannot have an admin.' });
+        }
+        const present = await supaGet(`team_members?organization_id=eq.${organization_id}&select=id&limit=1`);
+        if (present.length) {
+          return respond(400, { ok: false, message: 'An individual account holds one user, and this one already has its user.' });
+        }
+      }
+
+      // Contained-spend rule. The platform admin may hand out any plan. Everyone
+      // else may only draw from an organization's POOL (credits are bounded by it),
+      // or, for LMI staff onboarding someone with no pool, the free plans.
+      const wantsOverride = creditsOverride !== undefined && creditsOverride !== null && creditsOverride !== '';
+      if (!isPlatform) {
+        if (isInstitutional && !pooled) {
+          return respond(403, { ok: false, message: 'Your organization has no credit pool yet — ask LMI to set one up before adding users.' });
+        }
+        if (!pooled) {
+          if (!FREE_PLANS.includes(plan)) {
+            return respond(403, { ok: false, message: 'Your account can create users on the free plans only.' });
+          }
+          if (wantsOverride) {
+            return respond(403, { ok: false, message: 'Your account cannot change the credit allowance.' });
+          }
         }
       }
       let creditsTotal = planDef.credits;
-      if (creditsOverride !== undefined && creditsOverride !== null && creditsOverride !== '') {
+      if (wantsOverride) {
         if (plan === 'unlimited') {
           return respond(400, { ok: false, message: 'A no-limit plan has no credit allowance to set.' });
         }
@@ -388,12 +483,9 @@ exports.handler = async function (event) {
         creditsTotal = n;
       }
 
-      // Data-clearing permission: only platform-level admins may set it.
+      // Data-clearing permission: any admin may set it for a user they manage.
       let canClearData = null; // null = leave the database default (true)
       if (can_clear_data !== undefined && can_clear_data !== null && can_clear_data !== '') {
-        if (!platformLevel) {
-          return respond(403, { ok: false, message: 'Your account cannot change the data-clearing permission.' });
-        }
         if (typeof can_clear_data !== 'boolean') {
           return respond(400, { ok: false, message: 'can_clear_data must be true or false.' });
         }
@@ -415,8 +507,11 @@ exports.handler = async function (event) {
         if (found.length !== ids.length) {
           return respond(400, { ok: false, message: 'One or more selected industries no longer exist.' });
         }
-        if (!platformLevel && found.some((f) => !f.is_public)) {
-          return respond(403, { ok: false, message: 'Your account cannot assign a custom industry.' });
+        // A custom (non-public) industry may be passed on only by the platform admin,
+        // or by an admin who has been given that industry themselves.
+        const mine = new Set(Array.isArray(member.allowed_industry_ids) ? member.allowed_industry_ids : []);
+        if (!isPlatform && found.some((f) => !f.is_public && !mine.has(f.id))) {
+          return respond(403, { ok: false, message: 'Your account cannot assign a custom industry you have not been given yourself.' });
         }
         allowedIds = ids;
       }
@@ -425,18 +520,40 @@ exports.handler = async function (event) {
       if (existing.length) {
         return respond(400, { ok: false, message: 'A user with this email already exists.' });
       }
-      const orgCheck = await supaGet(`organizations?id=eq.${organization_id}&select=id,credit_pool`);
-      if (!orgCheck.length) {
-        return respond(404, { ok: false, message: 'Organization not found.' });
-      }
       // Pooled organization: every user must draw a defined allocation from the
       // pool, and the pool can never be over-allocated.
-      if (orgCheck[0].credit_pool != null) {
+      if (pooled) {
         if (creditsTotal == null) {
           return respond(400, { ok: false, message: 'This organization has a credit pool, so every user needs a plan with credits — a no-limit user would make the pool meaningless.' });
         }
         const shortfall = await poolShortfall(organization_id, creditsTotal);
         if (shortfall) return respond(400, { ok: false, message: shortfall });
+      }
+
+      // B2C: create the personal organization (named after the person) first.
+      let targetOrgId = organization_id;
+      let newOrg = null;
+      let newSub = null;
+      const warnings = [];
+      if (makingIndividual) {
+        const createdOrg = await supaPost('organizations', { name: cleanName, type: 'individual', default_user_segment: user_segment, credit_pool: null });
+        newOrg = createdOrg[0];
+        targetOrgId = newOrg.id;
+        try {
+          const subs = await supaPost('subscriptions', {
+            organization_id: newOrg.id,
+            seats_purchased: 1,
+            status: 'active',
+            activation_method: 'admin_offline',
+            created_by: member.id,
+            approved_by: member.id,
+            approved_at: new Date().toISOString()
+          });
+          newSub = subs[0] || null;
+        } catch (e) {
+          try { await supaDelete(`organizations?id=eq.${newOrg.id}`); } catch (e2) { /* best effort */ }
+          return respond(500, { ok: false, message: 'Could not set up the personal account, nothing was created. (' + String(e.message).slice(0, 200) + ')' });
+        }
       }
 
       const setupToken = generateSetupToken();
@@ -449,7 +566,7 @@ exports.handler = async function (event) {
         email: email.trim(),
         key_type,
         user_segment,
-        organization_id,
+        organization_id: targetOrgId,
         is_active: true,
         access_level: level,
         plan_type: plan,
@@ -469,8 +586,27 @@ exports.handler = async function (event) {
       if (canClearData === false) row.can_clear_data = false;
       if (cleanName) row.name = cleanName;
 
-      const created = await supaPost('team_members', row);
-      const warnings = [];
+      let created;
+      try {
+        created = await supaPost('team_members', row);
+      } catch (e) {
+        // Do not leave an empty personal organization behind.
+        if (newOrg) {
+          try { if (newSub) await supaDelete(`subscriptions?id=eq.${newSub.id}`); } catch (e2) { /* best effort */ }
+          try { await supaDelete(`organizations?id=eq.${newOrg.id}`); } catch (e2) { /* best effort */ }
+        }
+        return respond(500, { ok: false, message: 'Could not create the user' + (newOrg ? ' — the personal account was not kept' : '') + '. (' + String(e.message).slice(0, 200) + ')' });
+      }
+
+      // LMI staff who create an individual account keep it on their managed list.
+      if (newOrg && isOrgAdmin) {
+        try {
+          await supaPost('admin_organizations', { member_id: member.id, organization_id: newOrg.id, assigned_by: member.id });
+        } catch (e) {
+          warnings.push('The account was created, but could not be added to your managed organizations (' + String(e.message).slice(0, 120) + '). Ask the platform admin to add it.');
+        }
+      }
+
       if (creditsTotal != null) {
         const led = await tryLedger({ member_id: created[0].id, action: 'initial_grant', delta: creditsTotal, balance_after: creditsTotal, actor_id: member.id, note: 'plan ' + plan });
         if (!led.ok) warnings.push(ledgerWarning('The credits were granted', led.error));
@@ -479,6 +615,7 @@ exports.handler = async function (event) {
       return respond(200, {
         ok: true,
         member: summarize(created[0]),
+        organization: newOrg ? { id: newOrg.id, name: newOrg.name, type: 'individual' } : undefined,
         warnings,
         setup_token: setupToken,
         setup_url: `${process.env.URL || 'https://prepdo.netlify.app'}/index.html?setup_token=${setupToken}`,
@@ -488,21 +625,31 @@ exports.handler = async function (event) {
 
     if (action === 'list-users') {
       const cols = 'id,email,name,key_type,user_segment,organization_id,access_level,plan_type,subscription_expiry_date,credits_total,credits_used,allowed_industry_ids,is_active,last_login,created_at,can_clear_data,credit_request_at,credit_request_note';
+      const wantOrg = payload.organization_id && UUID_RE.test(payload.organization_id) ? payload.organization_id : null;
       let rows = [];
-      if (platformLevel) {
-        rows = await supaGet(`team_members?select=${cols}&order=created_at.desc`);
-      } else if (member.organization_id) {
-        rows = await supaGet(`team_members?organization_id=eq.${member.organization_id}&select=${cols}&order=created_at.desc`);
+      if (isPlatform) {
+        rows = await supaGet(`team_members?${wantOrg ? `organization_id=eq.${wantOrg}&` : ''}select=${cols}&order=created_at.desc`);
+      } else {
+        const ids = scopeOrgIds(member);
+        const use = wantOrg && ids.includes(wantOrg) ? [wantOrg] : ids;
+        if (use.length) {
+          rows = await supaGet(`team_members?organization_id=in.(${use.join(',')})&select=${cols}&order=created_at.desc`);
+        }
       }
       // Never show people above your own tier.
       rows = rows.filter((r) => (TIER_RANK[r.key_type] ?? 0) <= TIER_RANK[member.key_type]);
-      return respond(200, { ok: true, users: rows.map((r) => ({ ...r, credits_total: r.credits_total == null ? null : Number(r.credits_total), credits_used: round2(Number(r.credits_used || 0)), credits_remaining: creditsRemaining(r) })) });
+      // The platform admin also sees which organizations each org admin manages.
+      const managed = {};
+      if (isPlatform) {
+        try {
+          const links = await supaGet('admin_organizations?select=member_id,organization_id');
+          links.forEach((l) => { (managed[l.member_id] = managed[l.member_id] || []).push(l.organization_id); });
+        } catch (e) { /* table not created yet */ }
+      }
+      return respond(200, { ok: true, users: rows.map((r) => ({ ...r, credits_total: r.credits_total == null ? null : Number(r.credits_total), credits_used: round2(Number(r.credits_used || 0)), credits_remaining: creditsRemaining(r), managed_org_ids: r.key_type === 'org_admin' ? (managed[r.id] || []) : undefined })) });
     }
 
     if (action === 'adjust-user') {
-      if (!platformLevel) {
-        return respond(403, { ok: false, message: 'Only platform or institutional admins can change credits or plans.' });
-      }
       const { user_id, add_credits, extend_months, access_level, can_clear_data, dismiss_credit_request } = payload;
       if (!user_id || !UUID_RE.test(user_id)) {
         return respond(400, { ok: false, message: 'A valid user is required.' });
@@ -518,6 +665,9 @@ exports.handler = async function (event) {
       if (TIER_RANK[target.key_type] > TIER_RANK[member.key_type]) {
         return respond(403, { ok: false, message: 'You cannot change a user above your own tier.' });
       }
+      if (!isPlatform && !inScope(target.organization_id)) {
+        return respond(403, { ok: false, message: OUT_OF_SCOPE });
+      }
 
       const updates = {};
       let addedCredits = null;
@@ -529,12 +679,22 @@ exports.handler = async function (event) {
         if (target.credits_total == null) {
           return respond(400, { ok: false, message: 'This user has no credit limit, so there is nothing to add to.' });
         }
+        // Outside the platform admin, credits only move out of an organization's pool.
+        if (!isPlatform) {
+          const orgs = await supaGet(`organizations?id=eq.${target.organization_id}&select=credit_pool`);
+          if (!orgs.length || orgs[0].credit_pool == null) {
+            return respond(403, { ok: false, message: 'Credits on an account without a pool are added by the platform admin.' });
+          }
+        }
         const shortfall = await poolShortfall(target.organization_id, n);
         if (shortfall) return respond(400, { ok: false, message: shortfall });
         updates.credits_total = round2(Number(target.credits_total) + n);
         addedCredits = n;
       }
       if (extend_months !== undefined && extend_months !== null && extend_months !== '') {
+        if (!isPlatform) {
+          return respond(403, { ok: false, message: 'Only the platform admin can extend a subscription.' });
+        }
         const m = Number(extend_months);
         if (![1, 3, 12].includes(m)) {
           return respond(400, { ok: false, message: 'Extend by 1, 3 or 12 months.' });
@@ -580,8 +740,8 @@ exports.handler = async function (event) {
     }
 
     if (action === 'ledger-check') {
-      if (!platformLevel) {
-        return respond(403, { ok: false, message: 'Only platform or institutional admins can run this check.' });
+      if (!isPlatform) {
+        return respond(403, { ok: false, message: 'Only the platform admin can run this check.' });
       }
       let probe;
       try {
@@ -598,9 +758,6 @@ exports.handler = async function (event) {
     }
 
     if (action === 'deactivate-user' || action === 'reactivate-user' || action === 'delete-user') {
-      if (!platformLevel) {
-        return respond(403, { ok: false, message: 'Only platform or institutional admins can deactivate or delete users.' });
-      }
       const { user_id } = payload;
       if (!user_id || !UUID_RE.test(user_id)) {
         return respond(400, { ok: false, message: 'A valid user is required.' });
@@ -610,6 +767,9 @@ exports.handler = async function (event) {
         return respond(404, { ok: false, message: 'User not found.' });
       }
       const target = found[0];
+      if (!isPlatform && !inScope(target.organization_id)) {
+        return respond(403, { ok: false, message: OUT_OF_SCOPE });
+      }
       if (target.id === member.id) {
         return respond(400, { ok: false, message: 'You cannot do this to your own account.' });
       }
@@ -688,6 +848,45 @@ exports.handler = async function (event) {
       return respond(200, { ok: true, deleted_email: target.email });
     }
 
+    if (action === 'set-admin-organizations') {
+      if (!isPlatform) {
+        return respond(403, { ok: false, message: 'Only the platform admin can assign an org admin\'s organizations.' });
+      }
+      const { user_id, organization_ids } = payload;
+      if (!user_id || !UUID_RE.test(user_id)) {
+        return respond(400, { ok: false, message: 'A valid user is required.' });
+      }
+      if (!Array.isArray(organization_ids)) {
+        return respond(400, { ok: false, message: 'organization_ids must be a list (it may be empty).' });
+      }
+      const ids = [...new Set(organization_ids)];
+      if (ids.length > 200 || !ids.every((i) => typeof i === 'string' && UUID_RE.test(i))) {
+        return respond(400, { ok: false, message: 'Invalid organization list.' });
+      }
+      const found = await supaGet(`team_members?id=eq.${user_id}&select=id,key_type,organization_id,email`);
+      if (!found.length) return respond(404, { ok: false, message: 'User not found.' });
+      if (found[0].key_type !== 'org_admin') {
+        return respond(400, { ok: false, message: 'Managed organizations apply to org admins only.' });
+      }
+      if (ids.length) {
+        const real = await supaGet(`organizations?id=in.(${ids.join(',')})&select=id`);
+        if (real.length !== ids.length) {
+          return respond(400, { ok: false, message: 'One or more of those organizations no longer exists.' });
+        }
+      }
+      // The home organization is always theirs, so it is never stored in the list.
+      const keep = ids.filter((i) => i !== found[0].organization_id);
+      try {
+        await supaDelete(`admin_organizations?member_id=eq.${user_id}`);
+        for (const oid of keep) {
+          await supaPost('admin_organizations', { member_id: user_id, organization_id: oid, assigned_by: member.id });
+        }
+      } catch (e) {
+        return respond(500, { ok: false, message: 'Could not save the list — run migration_v28.sql first if you have not. (' + String(e.message).slice(0, 200) + ')' });
+      }
+      return respond(200, { ok: true, user_id, organization_ids: keep });
+    }
+
     if (action === 'regenerate-access') {
       const { email } = payload;
       if (!email || !email.trim()) {
@@ -703,8 +902,8 @@ exports.handler = async function (event) {
       if (TIER_RANK[targetUser.key_type] > TIER_RANK[member.key_type]) {
         return respond(403, { ok: false, message: `You cannot regenerate access for a tier above your own (${member.key_type}).` });
       }
-      if (member.key_type === 'org_admin' && targetUser.organization_id !== member.organization_id) {
-        return respond(403, { ok: false, message: 'You can only regenerate access for users within your own organization.' });
+      if (!isPlatform && !inScope(targetUser.organization_id)) {
+        return respond(403, { ok: false, message: 'You can only regenerate access for users in organizations you manage.' });
       }
       if (!targetUser.is_active) {
         return respond(403, { ok: false, message: 'This account is deactivated — reactivate it before regenerating access.' });
