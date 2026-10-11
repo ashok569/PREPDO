@@ -1,4 +1,11 @@
 // PREPDO — roleplay-start.js
+// BUILD 30 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+// The report now takes the prospect's organization.
+//
 // BUILD 29 | 2026-09-28
 // Credits instead of runs. Starting a roleplay charges NOTHING here — each
 // message (roleplay-turn.js) and the debrief are charged as they happen. A NEW
@@ -39,7 +46,7 @@
 // themselves, same pattern as both reference roleplay transcripts this
 // was designed from.
 
-const { getMemberFromSession, supaPost, supaGet, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaPost, supaGet, respond, handleOptions, canActOn } = require('./_lib.js');
 const { checkAccess, MIN_TO_START_ROLEPLAY } = require('./_access.js');
 
 exports.handler = async function (event) {
@@ -88,7 +95,7 @@ exports.handler = async function (event) {
         return respond(404, { ok: false, message: 'Prospect not found.' });
       }
       prospectContext = prospects[0];
-      if (!isInScope(member, prospectContext)) {
+      if (!canActOn(member, prospectContext)) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -103,7 +110,7 @@ exports.handler = async function (event) {
     const [report] = await supaPost('reports', {
       prospect_id: prospect_id || null,
       owner_id: member.id,
-      organization_id: member.organization_id || null,
+      organization_id: (prospectContext && prospectContext.organization_id) || member.organization_id || null,
       report_type: 'role_play',
       status: 'complete', // the conversation itself has no "generation" step to wait on
       structured_data: {
