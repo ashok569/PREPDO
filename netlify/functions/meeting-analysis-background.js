@@ -1,4 +1,13 @@
 // PREPDO — meeting-analysis-background.js
+// BUILD 43 | 2026-10-11 (ships with the Build 89 package)
+// Real bug from a live report: the Client Perspective tab was cut off mid-sentence
+// ("The CH"). Cause: Self-Reflection Evaluation and Client Perspective were generated
+// in ONE call sharing a 1,400-token budget; a long Self-Reflection answer used it up.
+// This is the same shared-budget failure fixed before (Build 22, Build 42). They are
+// now two separate parallel calls (Self-Reflection 1,800 tokens, Client Perspective
+// 1,200), so neither can starve the other. Every call here also now allows 150 seconds
+// instead of the 90-second default, since a background function can wait longer.
+//
 // BUILD 42 | 2026-09-30
 // Relationship Building — a new section, alongside the technique analysis,
 // looking at signals that belong to the wider sales journey rather than one
@@ -100,7 +109,7 @@
 // Plus (Build 38) Self-Reflection Eval and Client Perspective:
 //   ai_output_self_reflection, ai_output_client_perspective
 //
-// 6 parallel calls total (no time-pressure — Background Function).
+// 7 parallel calls total (no time-pressure — Background Function).
 
 const fs = require('fs');
 const path = require('path');
@@ -250,7 +259,8 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY this m
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 3500
+      max_tokens: 3500,
+      timeoutMs: 150000
     });
     const sections = parseMarkers(extractText(res), ['DETAILED']);
     return { ok: true, sections, model: res.model, usage: res.usage };
@@ -277,7 +287,8 @@ Then a blank line, then 2-3 sentences of reasoning grounded in specific, named c
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1000
+      max_tokens: 1000,
+      timeoutMs: 150000
     });
     const sections = parseMarkers(extractText(res), ['SUMMARY', 'OVERALL_SCORE']);
     return { ok: true, sections, model: res.model, usage: res.usage };
@@ -304,7 +315,8 @@ A bulleted list of specific, concrete next actions for the salesperson — tied 
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1800
+      max_tokens: 1800,
+      timeoutMs: 150000
     });
     const sections = parseMarkers(extractText(res), ['PROBABILITY_OF_CLOSE', 'RECOMMENDED_ACTIONS']);
     return { ok: true, sections, model: res.model, usage: res.usage };
@@ -333,7 +345,8 @@ Using the sales context above, analyze this meeting. Respond with EXACTLY these 
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1600
+      max_tokens: 1600,
+      timeoutMs: 150000
     });
     const sections = parseMarkers(extractText(res), ['MISSED_ITEMS', 'EMERGENT_OPPORTUNITIES', 'POINTS_TO_PONDER']);
     return { ok: true, sections, model: res.model, usage: res.usage };
@@ -360,7 +373,8 @@ Respond with EXACTLY this markdown section header, nothing before it or after th
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1400
+      max_tokens: 1400,
+      timeoutMs: 150000
     });
     const sections = parseMarkers(extractText(res), ['RELATIONSHIP_BUILDING']);
     return { ok: true, sections, model: res.model, usage: res.usage };
@@ -369,7 +383,7 @@ Respond with EXACTLY this markdown section header, nothing before it or after th
   }
 }
 
-async function generateReflectionAndClient(prospect, meeting, methodologyContext, isNonLmi) {
+async function generateReflection(prospect, meeting, methodologyContext, isNonLmi) {
   try {
     const hasUserReflection = meeting.self_reflection && (meeting.self_reflection.what_went_well || meeting.self_reflection.what_could_improve || meeting.self_reflection.sales_cycle_adherence_percent);
     const reflectionNote = hasUserReflection
@@ -380,10 +394,31 @@ async function generateReflectionAndClient(prospect, meeting, methodologyContext
 
 ---
 
-Using the sales context above, respond with EXACTLY these markdown section headers, nothing before the first or after the last:
+Using the sales context above, respond with EXACTLY this markdown section header, nothing before it or after the content:
 
 ### SELF_REFLECTION_EVAL
-Your own independent answers to the same three questions a salesperson would ask themselves after a meeting: What went well? What could improve? What's your estimate of adherence to good sales process, as a percentage?${reflectionNote} Structure your answer with these three sub-points clearly labeled: **What went well**, **What could improve**, **Estimated adherence**.
+Your own independent answers to the same three questions a salesperson would ask themselves after a meeting: What went well? What could improve? What's your estimate of adherence to good sales process, as a percentage?${reflectionNote} Structure your answer with these three sub-points clearly labeled: **What went well**, **What could improve**, **Estimated adherence**.`;
+
+    const res = await callClaude({
+      system: buildCacheableSystem(methodologyContext),
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 1800,
+      timeoutMs: 150000
+    });
+    const sections = parseMarkers(extractText(res), ['SELF_REFLECTION_EVAL']);
+    return { ok: true, sections, model: res.model, usage: res.usage };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+async function generateClientPerspective(prospect, meeting, methodologyContext, isNonLmi) {
+  try {
+    const prompt = `${buildMeetingBlock(prospect, meeting, isNonLmi)}
+
+---
+
+Using the sales context above, respond with EXACTLY this markdown section header, nothing before it or after the content:
 
 ### CLIENT_PERSPECTIVE
 A short read of how this conversation likely landed from the PROSPECT's own side — grounded specifically in what they actually said and how they engaged (their tone, their questions, what they volunteered vs. what had to be drawn out), not speculation beyond what the conversation itself supports. End this section with exactly this sentence on its own line: "This client perspective is indicative and not a firm opinion."`;
@@ -391,9 +426,10 @@ A short read of how this conversation likely landed from the PROSPECT's own side
     const res = await callClaude({
       system: buildCacheableSystem(methodologyContext),
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1400
+      max_tokens: 1200,
+      timeoutMs: 150000
     });
-    const sections = parseMarkers(extractText(res), ['SELF_REFLECTION_EVAL', 'CLIENT_PERSPECTIVE']);
+    const sections = parseMarkers(extractText(res), ['CLIENT_PERSPECTIVE']);
     return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -457,23 +493,24 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - context load)' };
     }
 
-    const [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult] = await Promise.allSettled([
+    const [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult, clientResult] = await Promise.allSettled([
       generateDetailed(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateSummaryScore(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateScoring(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
       generateGaps(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
-      generateReflectionAndClient(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
-      generateRelationshipBuilding(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
+      generateReflection(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateRelationshipBuilding(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi),
+      generateClientPerspective(prospect, meeting, METHODOLOGY_CONTEXT, isNonLmi)
     ]);
 
-    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult].map((r) =>
+    const results = [detailedResult, summaryScoreResult, scoringResult, gapsResult, reflectionResult, relationshipResult, clientResult].map((r) =>
       r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }
     );
 
     // Log real usage for every section that actually ran, regardless of
     // downstream success — a failed parse after a successful, billed
     // API call still cost real money and should be logged.
-    const sectionNames = ['detailed', 'summary_score', 'scoring', 'gaps', 'reflection', 'relationship'];
+    const sectionNames = ['detailed', 'summary_score', 'scoring', 'gaps', 'reflection', 'relationship', 'client_perspective'];
     await Promise.all(results.map((r, i) =>
       r.usage
         ? logApiUsage({ member_id: member.id, report_id, function_name: 'meeting-analysis-background', action: sectionNames[i], model: r.model, claudeResponse: { usage: r.usage } })
@@ -494,8 +531,9 @@ exports.handler = async function (event) {
     if (!results[1].ok) failedParts.push('Summary / Score');
     if (!results[2].ok) failedParts.push('Probability of Close / Recommended Actions');
     if (!results[3].ok) failedParts.push('Missed Items / Opportunities / Points to Ponder');
-    if (!results[4].ok) failedParts.push('Self-Reflection Evaluation / Client Perspective');
+    if (!results[4].ok) failedParts.push('Self-Reflection Evaluation');
     if (!results[5].ok) failedParts.push('Relationship Building');
+    if (!results[6].ok) failedParts.push('Client Perspective');
 
     const scoreParsed = extractLeadingNumber(allSections.OVERALL_SCORE, 'SCORE');
     const probParsed = extractLeadingNumber(allSections.PROBABILITY_OF_CLOSE, 'PROBABILITY');
