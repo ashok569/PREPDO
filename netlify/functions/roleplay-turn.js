@@ -1,4 +1,23 @@
 // PREPDO — roleplay-turn.js
+// BUILD 34 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+//
+// BUILD 33 | 2026-09-29
+// Real bug found from two live Reserved-mode transcripts: the persona ignored
+// Reserved entirely when the active industry document told it, repeatedly and
+// unconditionally, to "volunteer naturally" (written with no awareness that a
+// difficulty setting exists at all). The main fix is in the industry document
+// itself (KBR's now branches its guidance by difficulty) — but that fix is
+// per-document, so any future industry write-up that doesn't branch this way
+// would reproduce the same failure. Hardened the Reserved block itself as a
+// defence in depth: the override sentence is now several concrete lines
+// naming exactly what "trust changes tone, not disclosure" looks like, placed
+// right before HOW TO RESPOND (closest to where the reply is actually
+// generated) rather than only stated once earlier in the prompt.
+//
 // BUILD 32 | 2026-09-28
 // Each message exchanged now charges PRICES.roleplay_turn credits (0.1 for now)
 // AFTER the reply has been generated. BETA RULE: allowNegative — a session that
@@ -35,7 +54,7 @@
 // methodology it is aware of.
 //
 // BUILD 29 | 2026-09-06
-// Replaced the admin-scope check with the new shared isInScope() from
+// Replaced the admin-scope check with the new shared canActOn() from
 // _lib.js — same tier-rework fix as prospects.js. select=* already
 // includes organization_id once migration_v18.sql has run, so no
 // query change needed here, just the check itself.
@@ -73,13 +92,16 @@
 // async start/background/poll pattern needed for a single turn.
 
 const { charge } = require('./_access.js');
-const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, callClaude, extractText, buildCacheableSystem, logApiUsage, respond, handleOptions, canActOn } = require('./_lib.js');
 
 const DIFFICULTY_BLOCKS = {
   supportive: `DIFFICULTY: Friendly. You are cooperative and genuinely open — glad to talk, you answer questions willingly and volunteer relevant context. You are still a real, busy person: you don't just agree with everything, you ask reasonable questions, and you don't invent resistance either.`,
   tough: `DIFFICULTY: Challenging. You are willing to talk but you push back. Raise real objections and stalls the way busy decision-makers actually do — for example "send me something and I'll take a look", "we're not looking at this right now", "we already have something for that", "I'd need to run it by others", "call me next quarter". Don't accept vague claims; ask for specifics, examples and proof. Yield genuine ground only when the salesperson earns it with a specific, well-handled answer. Stay realistic, never cartoonishly hostile — you still share information when asked good questions; the resistance is to being pitched or pushed, not to conversation.`,
   reserved: `DIFFICULTY: Reserved. You are civil but guarded, and you do not volunteer information. Answer what is asked, briefly — usually one or two sentences — and stop. Do not add context, problems, numbers or names unprompted. Closed questions get short answers, generic or textbook questions get generic answers, and premature pitching gets a polite, non-committal reply. Information opens up gradually and only in response to good discovery: a specific open question that builds on what you just said earns a fuller, more useful answer, and a follow-up that probes consequences or numbers earns the real detail. You do not raise stalls or objections — your reserve is about disclosure, not about resisting a sale. If the salesperson asks weak questions throughout, they simply learn little; but you never become artificially unhelpful once genuinely good questions are asked.
-This setting governs how forthcoming you are and takes precedence over any industry guidance suggesting you should volunteer things freely: even a trusted colleague can be guarded about a particular subject — busy, preoccupied, or wary of exposing a problem — until the conversation makes it safe to open up.`
+This governs how forthcoming you are and OVERRIDES any industry or scenario guidance suggesting you volunteer things freely — including guidance describing an established, trusted or long-standing relationship. Trust and disclosure are different things. Concretely:
+- An established relationship changes your TONE (warm, familiar, first names, easy small talk), never how much unprompted business detail you share.
+- Do not open a topic by stating your own situation, numbers, or problems before being asked about it, even if the scenario says you have an existing rapport with this person.
+- Do not treat "we know each other well" as a reason to talk the way a colleague volunteering freely would — that behaviour belongs to Friendly, not to this setting, regardless of what any other instruction implies.`
 };
 
 function buildPersonaSystemPrompt(scenario, prospectSnapshot, presalesContext, industryContext, englishOnly) {
@@ -165,7 +187,7 @@ exports.handler = async function (event) {
       return respond(404, { ok: false, message: 'Roleplay session not found.' });
     }
     const report = rows[0];
-    if (!isInScope(member, report)) {
+    if (!canActOn(member, report)) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
 
