@@ -1,4 +1,17 @@
 // PREPDO — presales-generate-start.js
+// BUILD 23 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+// The report now takes the prospect's organization.
+//
+// BUILD 22 | 2026-09-30
+// Rerun wildcard: an optional rerun_wildcard_query, passed through unchanged
+// to presales-generate-background.js, which does the actual dedup-check,
+// research, and folding-in. This file stays a pure pass-through, same as it
+// already was for new_contact — no new logic here.
+//
 // BUILD 21 | 2026-09-28
 // Credits instead of runs: generating a Presales Prep report (or re-running it,
 // including a perspective-shift rerun) costs PRICES.report credits (see
@@ -10,13 +23,13 @@
 // re-running one, including a perspective-shift rerun) costs one run.
 //  - Roleplay-only accounts are refused; expired/deactivated/out-of-runs
 //    accounts are refused with a specific message (platform_admin exempt).
-//  - The prospect must be one the caller may access (isInScope) — previously
+//  - The prospect must be one the caller may access (canActOn) — previously
 //    any valid session could name any prospect id.
 //  - The run is spent just before the report row is created and REFUNDED if
 //    the report never starts (row creation fails, or the background trigger
 //    fails), so a run is never lost to a system fault.
 //  - New reports now carry organization_id, as the org-scoped access rules
-//    (getScopeFilter/isInScope) assume.
+//    (getScopeFilter/canActOn) assume.
 //
 // BUILD 19 | 2026-08-13
 // Now accepts an optional new_contact ({name, role}) — the perspective-
@@ -42,7 +55,7 @@
 // triggerRes.ok explicitly and marks the report 'failed' with the
 // actual status code if the trigger didn't succeed.
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, canActOn } = require('./_lib.js');
 const { checkAccess, charge, refund, linkLedger, PRICES } = require('./_access.js');
 
 exports.handler = async function (event) {
@@ -58,7 +71,7 @@ exports.handler = async function (event) {
     return respond(400, { ok: false, message: 'Invalid request.' });
   }
 
-  const { session_token, prospect_id, prospect, confirmed_facts, new_contact } = payload;
+  const { session_token, prospect_id, prospect, confirmed_facts, new_contact, rerun_wildcard_query } = payload;
 
   let member = null;
   let runConsumed = false;
@@ -80,7 +93,7 @@ exports.handler = async function (event) {
     if (!prospectRows.length) {
       return respond(404, { ok: false, message: 'Prospect not found.' });
     }
-    if (!isInScope(member, prospectRows[0])) {
+    if (!canActOn(member, prospectRows[0])) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
 
@@ -92,7 +105,7 @@ exports.handler = async function (event) {
     const [report] = await supaPost('reports', {
       prospect_id,
       owner_id: member.id,
-      organization_id: member.organization_id || null,
+      organization_id: prospectRows[0].organization_id || member.organization_id || null,
       report_type: 'presales_prep',
       confirmed_facts,
       status: 'pending'
@@ -117,6 +130,7 @@ exports.handler = async function (event) {
           prospect,
           confirmed_facts,
           new_contact: new_contact || null,
+          rerun_wildcard_query: rerun_wildcard_query || null,
           session_token
         })
       });
