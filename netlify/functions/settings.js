@@ -1,4 +1,12 @@
 // PREPDO — settings.js
+// BUILD 58 | 2026-10-11 (ships in the Build 89 package)
+// Industry access follows the role model (needs _lib.js 26): list-industries and
+// select-industry no longer treat an institutional admin as platform-level — only the
+// platform admin sees every industry; everyone else sees public ones plus those assigned
+// to them. get-industry-preview used to return ANY industry's content (including custom,
+// non-public ones such as KBR's) to anyone holding its id; it now requires the industry to
+// be public, assigned to the caller, or the one they already use (platform admin: all).
+//
 // BUILD 57 | 2026-10-02
 // TEMPORARY credit-request provision. There is no email service yet, so
 // 'request-credits' records a user's top-up request on their own row
@@ -216,7 +224,10 @@ exports.handler = async function (event) {
       // platform-level, who see everything (the library editor, and the
       // User Setup checklist, both need the full list).
       const allowedIds = industryRestriction(member);
-      const platformLevel = member.key_type === 'platform_admin' || member.key_type === 'institutional_admin';
+      // BUILD 89: only the platform admin sees every industry. A client's own
+      // administrator (institutional_admin) and LMI staff (org_admin) see the public
+      // ones plus whatever they were assigned, like anyone else.
+      const platformLevel = member.key_type === 'platform_admin';
       const filter = allowedIds ? `&id=in.(${allowedIds.join(',')})` : (platformLevel ? '' : '&is_public=eq.true');
       const rows = await supaGet(`industry_contexts?select=id,industry_name&order=display_order.asc${filter}`);
       return respond(200, { ok: true, industries: rows });
@@ -241,7 +252,7 @@ exports.handler = async function (event) {
       if (!check.length) {
         return respond(404, { ok: false, message: 'Industry not found.' });
       }
-      const platformLevel = member.key_type === 'platform_admin' || member.key_type === 'institutional_admin';
+      const platformLevel = member.key_type === 'platform_admin';
       if (!allowedIds && !platformLevel && !check[0].is_public) {
         return respond(403, { ok: false, message: 'That industry is not available on your account.' });
       }
@@ -263,9 +274,22 @@ exports.handler = async function (event) {
       if (!industry_context_id) {
         return respond(400, { ok: false, message: 'industry_context_id is required.' });
       }
-      const rows = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=context_content`);
+      const rows = await supaGet(`industry_contexts?id=eq.${industry_context_id}&select=id,is_public,context_content`);
       if (!rows.length) {
         return respond(404, { ok: false, message: 'Industry not found.' });
+      }
+      // BUILD 89: the preview used to return ANY industry's content to anyone who
+      // had its id, including custom (non-public) ones. Now it follows the same
+      // rule as the list: public, or assigned to this user, or the one they already
+      // use — and the platform admin sees all.
+      if (member.key_type !== 'platform_admin') {
+        const allowed = industryRestriction(member);
+        const mayView = rows[0].is_public
+          || (allowed && allowed.includes(rows[0].id))
+          || member.industry_context_id === rows[0].id;
+        if (!mayView) {
+          return respond(403, { ok: false, message: 'That industry is not available on your account.' });
+        }
       }
       return respond(200, { ok: true, context_content: rows[0].context_content });
     }
