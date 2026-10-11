@@ -1,5 +1,20 @@
 // PREPDO — presales-research-start.js
-// BUILD 4 | 2026-09-28
+// BUILD 6 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+// The report now takes the prospect's organization.
+//
+// BUILD 5 | 2026-09-30
+// Wildcard topic: if the prospect row has wildcard_query set (captured at
+// New Prospect setup — see prospects.js), it's passed through to the
+// background function as a 13th research topic. Nothing changes here if it's
+// absent — the fetch already pulls the whole prospect row (select=*), so this
+// is just reading one more field off something already in hand, not an extra
+// query.
+//
+// BUILD 3 | 2026-09-24 (run-based; never released)
 // Credits: the 12-topic research pass costs PRICES.research credits, charged
 // here at the start (research is a real cost — 12 web-search calls). The balance
 // must cover a WHOLE Presales Prep cycle (research + report) before research
@@ -22,7 +37,7 @@
 // 'pending' reports row (report_type: 'presales_research') that
 // presales-research-background.js updates as it works.
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, respond, handleOptions, canActOn } = require('./_lib.js');
 const { checkAccess, charge, refund, linkLedger, PRICES, FULL_CYCLE } = require('./_access.js');
 
 exports.handler = async function (event) {
@@ -56,14 +71,18 @@ exports.handler = async function (event) {
     const denied = checkAccess(member, { requireFull: true, needCredits: FULL_CYCLE });
     if (denied) return respond(denied.status, denied.body);
 
+    let wildcard_query = null;
+    let orgFromProspect = null;
     if (prospect_id) {
       const prospectRows = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
       if (!prospectRows.length) {
         return respond(404, { ok: false, message: 'Prospect not found.' });
       }
-      if (!isInScope(member, prospectRows[0])) {
+      if (!canActOn(member, prospectRows[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
+      wildcard_query = prospectRows[0].wildcard_query || null;
+      orgFromProspect = prospectRows[0].organization_id || null;
     }
 
     const paid = await charge(member, 'research');
@@ -72,7 +91,7 @@ exports.handler = async function (event) {
 
     const created = await supaPost('reports', {
       owner_id: member.id,
-      organization_id: member.organization_id || null,
+      organization_id: orgFromProspect || member.organization_id || null,
       prospect_id: prospect_id || null,
       report_type: 'presales_research',
       status: 'pending'
@@ -95,6 +114,7 @@ exports.handler = async function (event) {
           linkedin_paste,
           prospect_name,
           position,
+          wildcard_query,
           session_token
         })
       });
