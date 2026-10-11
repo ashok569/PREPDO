@@ -1,4 +1,14 @@
 // PREPDO — _lib.js
+// BUILD 26 | 2026-10-11 (ships in the Build 89 package)
+// Scope follows the role model: getScopeFilter/isInScope now understand an org
+// admin's LIST of managed organizations (admin_organizations, loaded per request
+// by getMemberFromSession) and give an institutional admin their own
+// organization. getScopeFilter takes an optional requested organization (the
+// organization switcher), honoured only inside the caller's scope. New helpers:
+// scopeOrgIds, canAdministerOrg, and canActOn (the narrower "may I run or write
+// into this record" rule the start/turn functions now use). Nothing else changed;
+// existing callers of getScopeFilter/isInScope keep working.
+//
 // BUILD 25 | 2026-09-28
 // Cost logging corrected — two real errors found by reading estimateCostUsd
 // against the first real cost data: (1) it applied ONE flat rate ($3 in / $15
@@ -67,8 +77,8 @@
 // BUILD 22 | 2026-08-10
 // Real bug fix: confirmed via a genuinely stuck Meeting Analysis report
 // (status 'pending', error_message NULL, hours later) that the BUILD 16
-// timeout fix only covered callClaude() — every Supabase call
-// (supaGet/supaPost/supaPatch/supaDelete) still had zero timeout protection at
+// timeout fix only covered callClaude() — every Supabase call (supaGet/
+// supaPost/supaPatch/supaDelete) still had zero timeout protection at
 // all. Since getMemberFromSession() — the very first thing every
 // background function does — calls supaGet(), a single hung Supabase
 // request could stall the entire function before it ever reached any
@@ -86,6 +96,8 @@ const crypto = require('crypto');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -232,7 +244,29 @@ async function getMemberFromSession(session_token) {
   if (matches.length === 0) return null;
   const member = matches[0];
   if (new Date(member.session_expires_at) < new Date()) return null;
+  member.managed_org_ids = await loadManagedOrgIds(member);
   return member;
+}
+
+// BUILD 89: the organizations an admin may work in. An org_admin (LMI staff) has
+// their home organization plus any assigned in admin_organizations (set only by
+// the platform admin); an institutional_admin has just their own organization.
+// Looked up on EVERY request (never cached in the session), so removing an
+// assignment takes effect immediately. If the table does not exist yet (the
+// functions were deployed before migration_v28 ran), this quietly falls back to
+// the home organization only — the old behaviour — instead of breaking login.
+async function loadManagedOrgIds(member) {
+  const own = member.organization_id ? [member.organization_id] : [];
+  if (member.key_type === 'org_admin') {
+    try {
+      const rows = await supaGet(`admin_organizations?member_id=eq.${member.id}&select=organization_id`);
+      return [...new Set([...own, ...rows.map((r) => r.organization_id).filter(Boolean)])];
+    } catch (e) {
+      return own;
+    }
+  }
+  if (member.key_type === 'institutional_admin') return own;
+  return [];
 }
 
 // Calls the Anthropic API. `tools` is optional (used for web search in
@@ -399,12 +433,39 @@ async function logApiUsage({ member_id, report_id, function_name, action, model,
 // doesn't have that problem.
 // Everyone else (org_admin with no organization_id set, institutional_
 // admin, member): falls back to their own records only.
-function getScopeFilter(member, ownerColumn = 'owner_id') {
-  if (member.key_type === 'platform_admin') return '';
-  if (member.key_type === 'org_admin' && member.organization_id) {
-    return `&organization_id=eq.${member.organization_id}`;
+//
+// BUILD 89: scope now follows the role model.
+// - platform_admin: everything (or one organization, if the caller asks for it).
+// - org_admin (LMI staff): every organization on their managed list
+//   (member.managed_org_ids, filled in by getMemberFromSession from the
+//   admin_organizations table, plus their home organization) PLUS their own records.
+// - institutional_admin (a client's own administrator): their one organization
+//   PLUS their own records. They were previously "own records only" here, yet
+//   treated as platform-level in several other places — both are fixed.
+// - member: own records only.
+// `requestedOrgId` (optional) narrows a list to ONE organization — the
+// organization switcher. It is honoured only if it is inside the caller's scope;
+// otherwise it is ignored and the normal scope applies, so it can never widen access.
+function scopeOrgIds(member) {
+  if (member.key_type === 'platform_admin') return null; // null = all
+  if (member.key_type === 'org_admin' || member.key_type === 'institutional_admin') {
+    const ids = Array.isArray(member.managed_org_ids) ? member.managed_org_ids : [];
+    if (ids.length) return ids;
+    return member.organization_id ? [member.organization_id] : [];
   }
-  return `&${ownerColumn}=eq.${member.id}`;
+  return [];
+}
+
+function getScopeFilter(member, ownerColumn = 'owner_id', requestedOrgId = null) {
+  const ids = scopeOrgIds(member);
+  if (ids === null) {
+    return requestedOrgId && UUID_PATTERN.test(requestedOrgId) ? `&organization_id=eq.${requestedOrgId}` : '';
+  }
+  if (!ids.length) return `&${ownerColumn}=eq.${member.id}`;
+  if (requestedOrgId && ids.includes(requestedOrgId)) {
+    return `&organization_id=eq.${requestedOrgId}`;
+  }
+  return `&or=(organization_id.in.(${ids.join(',')}),${ownerColumn}.eq.${member.id})`;
 }
 
 // Same underlying question as getScopeFilter, but for a single
@@ -413,11 +474,31 @@ function getScopeFilter(member, ownerColumn = 'owner_id') {
 // if the record doesn't carry one directly, falls back to comparing
 // owner_id) rather than re-deriving scope from a filter string.
 function isInScope(member, record, ownerColumn = 'owner_id') {
+  const ids = scopeOrgIds(member);
+  if (ids === null) return true;
+  if (record.organization_id && ids.includes(record.organization_id)) return true;
+  return record[ownerColumn] === member.id;
+}
+
+// BUILD 89: ACTING on a record (run a report on it, continue a roleplay, archive it)
+// is narrower than SEEING it. This is the original isInScope rule, unchanged in
+// effect: the platform admin, the record's owner, or LMI staff (org_admin) for
+// records in their HOME organization. Seeing another organization's prospects (via
+// the managed list) does not let anyone spend credits or write into them.
+function canActOn(member, record, ownerColumn = 'owner_id') {
   if (member.key_type === 'platform_admin') return true;
+  if (record[ownerColumn] === member.id) return true;
   if (member.key_type === 'org_admin' && member.organization_id) {
     return record.organization_id === member.organization_id;
   }
-  return record[ownerColumn] === member.id;
+  return false;
+}
+
+// Is this organization one the member may administer? (platform: any.)
+function canAdministerOrg(member, orgId) {
+  const ids = scopeOrgIds(member);
+  if (ids === null) return true;
+  return !!orgId && ids.includes(orgId);
 }
 
 module.exports = {
@@ -428,6 +509,6 @@ module.exports = {
   getMemberFromSession,
   callClaude, extractText,
   buildCacheableSystem, logApiUsage,
-  getScopeFilter, isInScope,
+  getScopeFilter, isInScope, canActOn, scopeOrgIds, canAdministerOrg,
   estimateCostUsd
 };
