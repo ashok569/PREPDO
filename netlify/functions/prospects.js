@@ -1,4 +1,20 @@
 // PREPDO — prospects.js
+// BUILD 20 | 2026-10-11 (ships in the Build 89 package)
+// Access made to match the role model (needs _lib.js Build 89 and migration_v28.sql):
+//  - 'get' now has an ownership/scope check (it returned any prospect and its
+//    reports to anyone who knew the id). Same rule as every other action.
+//  - 'create' stores the creator's organization_id on the prospect (reports already
+//    carried it; prospects did not, so an admin could not see members' new prospects).
+//  - 'list' and 'list-my-roleplays' take an optional organization_id — the organization
+//    switcher — honoured only inside the caller's scope.
+//  - Who may touch the DATA of a prospect (backup, clear, restore, delete): its owner,
+//    the platform admin, or a client's own institutional admin for a prospect in THEIR
+//    organization. LMI staff (org_admin) can VIEW prospects in organizations they manage
+//    but cannot clear or delete other people's data. 'delete' used to accept anyone "in
+//    scope"; it now uses the same rule as clear.
+//  - The 'can_clear_data' switch is bypassed only by the platform admin and a client's
+//    institutional admin (for their own organization's prospects).
+//
 // BUILD 19 | 2026-10-08
 // Real bug fix in the existing 'delete' action (found by check_foreign_keys.sql):
 // it deleted reports FIRST and never touched report_backups or
@@ -88,11 +104,15 @@
 //
 // Request body always includes { session_token, action, ...fields }
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope, canActOn } = require('./_lib.js');
 
-const isPlatformLevel = (m) => m.key_type === 'platform_admin' || m.key_type === 'institutional_admin';
-// Data actions: the prospect's owner, or a platform-level admin.
-const canManageData = (member, prospect) => prospect.owner_id === member.id || isPlatformLevel(member);
+const isPlatformAdmin = (m) => m.key_type === 'platform_admin';
+// Data actions (backup, clear, restore, delete): the prospect's owner, the platform
+// admin, or an institutional admin for a prospect in their OWN organization.
+const canManageData = (member, prospect) =>
+  prospect.owner_id === member.id
+  || isPlatformAdmin(member)
+  || (member.key_type === 'institutional_admin' && !!prospect.organization_id && prospect.organization_id === member.organization_id);
 
 // Tables whose rows must go before the reports can. [table, column that points at the PROSPECT or null, column that points at a REPORT or null]
 const CLEAR_STEPS = [
@@ -181,6 +201,24 @@ async function healClearedMarks(rows) {
   }
 }
 
+// For admins looking at other people's prospects: say whose each one is. Never lets a
+// failure here break the list.
+async function addOwnerLabels(member, rows) {
+  try {
+    const others = [...new Set(rows.map((r) => r.owner_id).filter((id) => id && id !== member.id))];
+    if (!others.length) return rows;
+    let people = [];
+    for (let i = 0; i < others.length; i += IN_CHUNK) {
+      people = people.concat(await supaGet(`team_members?id=in.(${others.slice(i, i + IN_CHUNK).join(',')})&select=id,name,email`));
+    }
+    const label = {};
+    people.forEach((t) => { label[t.id] = t.name || t.email; });
+    return rows.map((r) => (r.owner_id !== member.id && label[r.owner_id] ? { ...r, owner_label: label[r.owner_id] } : r));
+  } catch (e) {
+    return rows;
+  }
+}
+
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
   if (event.httpMethod !== 'POST') {
@@ -203,7 +241,7 @@ exports.handler = async function (event) {
     }
 
     if (action === 'list') {
-      const scope = getScopeFilter(member);
+      const scope = getScopeFilter(member, 'owner_id', payload.organization_id);
       const archivedValue = payload.archived ? 'true' : 'false';
       // folder_id filtering (BUILD 32): omit entirely for "All
       // Prospects" (default, unfiltered by folder), pass a real folder
@@ -216,7 +254,9 @@ exports.handler = async function (event) {
         folderFilter = `&folder_id=eq.${payload.folder_id}`;
       }
       const rows = await supaGet(`prospects?select=*${scope}&archived=eq.${archivedValue}${folderFilter}&order=created_at.desc`);
-      return respond(200, { ok: true, prospects: await healClearedMarks(rows) });
+      let out = await healClearedMarks(rows);
+      if (member.key_type !== 'member') out = await addOwnerLabels(member, out);
+      return respond(200, { ok: true, prospects: out });
     }
 
     if (action === 'list-my-roleplays') {
@@ -228,7 +268,7 @@ exports.handler = async function (event) {
       // view. Embeds the linked prospect's company/contact name via
       // PostgREST's foreign-table syntax where one exists; comes back
       // null for standalone sessions, handled on the frontend.
-      const scope = getScopeFilter(member);
+      const scope = getScopeFilter(member, 'owner_id', payload.organization_id);
       const rows = await supaGet(`reports?report_type=eq.role_play&select=*,prospects(company_name,prospect_name)${scope}&order=created_at.desc`);
       return respond(200, { ok: true, roleplays: rows });
     }
@@ -240,6 +280,7 @@ exports.handler = async function (event) {
       }
       const [row] = await supaPost('prospects', {
         owner_id: member.id,
+        organization_id: member.organization_id || null,
         company_name,
         company_website: company_website || null,
         prospect_name: prospect_name || null,
@@ -264,6 +305,9 @@ exports.handler = async function (event) {
 
       const rows = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
       if (!rows.length) return respond(404, { ok: false, message: 'Prospect not found.' });
+      if (!isInScope(member, rows[0])) {
+        return respond(403, { ok: false, message: 'Not authorized.' });
+      }
 
       const reports = await supaGet(`reports?prospect_id=eq.${prospect_id}&select=*&order=created_at.desc`);
       const [prospectOut] = reports.length ? await healClearedMarks(rows) : rows;
@@ -276,7 +320,7 @@ exports.handler = async function (event) {
 
       const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!isInScope(member, existing[0])) {
+      if (!canActOn(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -290,7 +334,7 @@ exports.handler = async function (event) {
 
       const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!isInScope(member, existing[0])) {
+      if (!canActOn(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -314,7 +358,7 @@ exports.handler = async function (event) {
 
       const existing = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
-      if (!isInScope(member, existing[0])) {
+      if (!canManageData(member, existing[0])) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -356,7 +400,8 @@ exports.handler = async function (event) {
       if (!existing.length) return respond(404, { ok: false, message: 'Prospect not found.' });
       const prospect = existing[0];
       if (!canManageData(member, prospect)) return respond(403, { ok: false, message: 'Not authorized.' });
-      if (!isPlatformLevel(member) && member.can_clear_data === false) {
+      const bypassesSwitch = isPlatformAdmin(member) || member.key_type === 'institutional_admin';
+      if (!bypassesSwitch && member.can_clear_data === false) {
         return respond(403, { ok: false, message: 'Your administrator has turned off data clearing for your account.' });
       }
       if (confirm_downloaded !== true) {
