@@ -1,4 +1,10 @@
 // PREPDO — iterative-research.js
+// BUILD 5 | 2026-10-11 (ships in the Build 89 package)
+// Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
+// run this — the platform admin, the owner, or LMI staff for their HOME organization —
+// so the wider "see another organization's prospects" scope never lets anyone spend credits
+// or write there.
+//
 // BUILD 4 | 2026-09-28
 // Starting a Guided Research session costs PRICES.guided_research credits
 // (charged at start; the later steps of the session are not charged separately
@@ -77,7 +83,7 @@
 //                         generation flow without a new integration
 //                         point there.
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, callClaude, extractText, logApiUsage, respond, handleOptions, canActOn } = require('./_lib.js');
 const { checkAccess, charge, refund, PRICES } = require('./_access.js');
 
 // The 4 standardized questions — LMI set, deliberately plain language.
@@ -157,7 +163,7 @@ exports.handler = async function (event) {
       if (!prospectRows.length) return respond(404, { ok: false, message: 'Prospect not found.' });
       const prospect = prospectRows[0];
 
-      if (!isInScope(member, prospect)) {
+      if (!canActOn(member, prospect)) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
       const denied = checkAccess(member, { requireFull: true, needCredits: PRICES.guided_research + PRICES.report });
@@ -225,7 +231,7 @@ exports.handler = async function (event) {
       if (!sessionRows.length) return respond(404, { ok: false, message: 'Session not found.' });
       const session = sessionRows[0];
 
-      if (!isInScope(member, session, 'member_id')) {
+      if (!canActOn(member, session, 'member_id')) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
       if (!session.initial_findings) {
@@ -287,7 +293,7 @@ The two pathways should be genuinely different from each other — not two versi
       if (!sessionRows.length) return respond(404, { ok: false, message: 'Session not found.' });
       const session = sessionRows[0];
 
-      if (!isInScope(member, session, 'member_id')) {
+      if (!canActOn(member, session, 'member_id')) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
       if (!session.proposed_pathways) {
@@ -331,7 +337,7 @@ The two pathways should be genuinely different from each other — not two versi
       if (!sessionRows.length) return respond(404, { ok: false, message: 'Session not found.' });
       const session = sessionRows[0];
 
-      if (!isInScope(member, session, 'member_id')) {
+      if (!canActOn(member, session, 'member_id')) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
@@ -409,7 +415,7 @@ The two pathways should be genuinely different from each other — not two versi
       if (!sessionRows.length) return respond(404, { ok: false, message: 'Session not found.' });
       const session = sessionRows[0];
 
-      if (!isInScope(member, session, 'member_id')) {
+      if (!canActOn(member, session, 'member_id')) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
 
