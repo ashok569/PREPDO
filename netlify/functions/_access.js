@@ -1,4 +1,10 @@
 // PREPDO — _access.js
+// BUILD 5 | 2026-11-22 (Build 90)
+// Credit rates are now editable: the credit_rates table (migration_v29.sql) overrides the built-in
+// PRICES numbers below. PRICES stays as the fallback and is updated IN PLACE from the table
+// (refreshed at most once a minute, and on every charge), so everything that reads PRICES keeps
+// working unchanged. If the table is missing or unreachable the built-in numbers are used.
+//
 // BUILD 4 | 2026-10-02
 // describeAccess now reports can_clear_data — whether this user may clear a
 // prospect's data from the cloud (migration_v27.sql). True unless an
@@ -49,6 +55,21 @@ const PRICES = {
   roleplay_turn: 0.1,   // per message exchanged
   roleplay_debrief: 1
 };
+const DEFAULT_PRICES = Object.assign({}, PRICES);
+let _ratesAt = 0;
+async function refreshRates(force) {
+  if (!force && Date.now() - _ratesAt < 60000) return PRICES;
+  _ratesAt = Date.now();
+  try {
+    const rows = await supaGet('credit_rates?select=action_key,credits');
+    rows.forEach((r) => {
+      const v = Number(r.credits);
+      if (Object.prototype.hasOwnProperty.call(DEFAULT_PRICES, r.action_key) && isFinite(v) && v >= 0) PRICES[r.action_key] = v;
+    });
+  } catch (e) { /* keep the numbers already in use */ }
+  return PRICES;
+}
+refreshRates(true);
 const MIN_TO_START_ROLEPLAY = 1;
 const FULL_CYCLE = PRICES.research + PRICES.report;
 const LOW_CREDITS = 2 * FULL_CYCLE;
@@ -129,6 +150,7 @@ async function linkLedger(ledgerId, reportId) {
 // Spend credits for an action. opts: { amount (override the price), allowNegative
 // (beta roleplay rule), reportId, note }. Returns { ok, charged, remaining, ledgerId }.
 async function charge(member, actionKey, opts = {}) {
+  await refreshRates();
   const amount = round2(opts.amount != null ? opts.amount : PRICES[actionKey]);
   if (!(amount > 0)) throw new Error('charge: no price for action ' + actionKey);
   if (isExempt(member) || member.credits_total == null) return { ok: true, charged: 0, remaining: null, ledgerId: null };
@@ -190,11 +212,11 @@ function describeAccess(member) {
     credits_used: round2(Number(member.credits_used || 0)),
     credits_remaining: remaining,
     unlimited: remaining === null,
-    low_credits: remaining !== null && remaining <= LOW_CREDITS,
+    low_credits: remaining !== null && remaining <= 2 * (PRICES.research + PRICES.report),
     out_of_credits: remaining !== null && remaining <= 0,
-    presales_cycles_left: remaining === null ? null : Math.floor(Math.max(remaining, 0) / FULL_CYCLE),
+    presales_cycles_left: remaining === null ? null : Math.floor(Math.max(remaining, 0) / (PRICES.research + PRICES.report)),
     prices: PRICES,
-    full_cycle_cost: FULL_CYCLE,
+    full_cycle_cost: PRICES.research + PRICES.report,
     credit_unit_usd: CREDIT_UNIT_USD,
     english_only: !!member.english_only,
     allowed_industry_ids: industryRestriction(member),
@@ -203,7 +225,7 @@ function describeAccess(member) {
 }
 
 module.exports = {
-  CREDIT_UNIT_USD, PRICES, MIN_TO_START_ROLEPLAY, FULL_CYCLE, LOW_CREDITS, round2,
+  CREDIT_UNIT_USD, PRICES, DEFAULT_PRICES, refreshRates, MIN_TO_START_ROLEPLAY, FULL_CYCLE, LOW_CREDITS, round2,
   isExempt, isExpired, creditsRemaining, industryRestriction,
   checkAccess, charge, refund, recordLedger, tryLedger, linkLedger, describeAccess
 };
