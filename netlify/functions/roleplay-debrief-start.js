@@ -1,4 +1,6 @@
 // PREPDO — roleplay-debrief-start.js
+// BUILD 90 | 2026-11-22: the permission check used the old key type 'admin' (which no longer exists),
+// so only the owner could start a debrief. It now uses canActOn: owner, platform admin, or LMI staff for their home org.
 // BUILD 27 | 2026-08-11
 // New file. Fast trigger for the debrief — mirrors the established
 // start/background/poll pattern (presales-generate-start.js,
@@ -7,7 +9,7 @@
 // can poll check-report-status.js (reused as-is — it's already generic
 // across report types).
 
-const { getMemberFromSession, supaGet, supaPatch, respond, handleOptions } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPatch, respond, handleOptions, canActOn } = require('./_lib.js');
 
 exports.handler = async function (event) {
   if (event.httpMethod === 'OPTIONS') return handleOptions();
@@ -38,7 +40,7 @@ exports.handler = async function (event) {
       return respond(404, { ok: false, message: 'Roleplay session not found.' });
     }
     const report = rows[0];
-    if (member.key_type !== 'admin' && report.owner_id !== member.id) {
+    if (!canActOn(member, report)) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
     if (!report.conversation || report.conversation.length === 0) {
