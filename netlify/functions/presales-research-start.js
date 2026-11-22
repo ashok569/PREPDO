@@ -1,4 +1,6 @@
 // PREPDO — presales-research-start.js
+// BUILD 90 | 2026-11-22: no double charge if research for the same prospect is already running
+// (last 15 minutes); the running report is returned. Credit check uses the live (editable) rates.
 // BUILD 6 | 2026-10-11 (ships in the Build 89 package)
 // Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
 // run this — the platform admin, the owner, or LMI staff for their HOME organization —
@@ -68,7 +70,7 @@ exports.handler = async function (event) {
       return respond(400, { ok: false, message: 'Company name is required.' });
     }
 
-    const denied = checkAccess(member, { requireFull: true, needCredits: FULL_CYCLE });
+    const denied = checkAccess(member, { requireFull: true, needCredits: PRICES.research + PRICES.report });
     if (denied) return respond(denied.status, denied.body);
 
     let wildcard_query = null;
@@ -83,6 +85,13 @@ exports.handler = async function (event) {
       }
       wildcard_query = prospectRows[0].wildcard_query || null;
       orgFromProspect = prospectRows[0].organization_id || null;
+    }
+
+    // BUILD 90: research for this prospect already running (last 15 min)? return it, charge nothing.
+    if (prospect_id) {
+      const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+      const running = await supaGet(`reports?prospect_id=eq.${prospect_id}&report_type=eq.presales_research&status=eq.pending&created_at=gte.${encodeURIComponent(since)}&select=id&order=created_at.desc&limit=1`);
+      if (running.length) return respond(200, { ok: true, report_id: running[0].id, already_running: true });
     }
 
     const paid = await charge(member, 'research');
