@@ -1,4 +1,6 @@
 // PREPDO — admin-user-setup.js
+// BUILD 90 | 2026-11-22: client admin creates MEMBERS ONLY; new platform-admin actions get-credit-rates,
+// set-credit-rate, report-costs, list-winback; delete-user can record a win-back contact (with consent).
 // BUILD 9 | 2026-10-11 (ships in the Build 89 package)
 // Roles made to match the real model (nothing here widens anyone's access):
 //  - platform_admin: everything. Only this tier may create organizations, change a
@@ -136,14 +138,14 @@
 
 const crypto = require('crypto');
 const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, hashToken, respond, handleOptions, scopeOrgIds, canAdministerOrg } = require('./_lib.js');
-const { creditsRemaining, round2, tryLedger } = require('./_access.js');
+const { creditsRemaining, round2, tryLedger, PRICES, DEFAULT_PRICES, refreshRates } = require('./_access.js');
 
 const TIER_RANK = { member: 0, org_admin: 1, institutional_admin: 2, platform_admin: 3 };
 // Which tiers each tier may create. Only the platform admin creates admins of any
 // kind except a client's own peer administrators.
 const GRANTABLE = {
   platform_admin: ['member', 'org_admin', 'institutional_admin'],
-  institutional_admin: ['member', 'institutional_admin'],
+  institutional_admin: ['member'], // Build 90: a client admin creates MEMBERS ONLY; a second admin is made by the platform admin
   org_admin: ['member']
 };
 const FREE_PLANS = ['free_1m', 'free_3m'];
@@ -840,12 +842,52 @@ exports.handler = async function (event) {
       if (!typed || typed !== String(target.email).toLowerCase()) {
         return respond(400, { ok: false, message: 'To confirm the deletion, type this user\'s email exactly.' });
       }
+      // BUILD 90: optional win-back record — only when the person agreed to be contacted later.
+      if (payload.winback_consent === true) {
+        try {
+          let orgName = null;
+          if (target.organization_id) { const o = await supaGet(`organizations?id=eq.${target.organization_id}&select=name`); orgName = o.length ? o[0].name : null; }
+          await supaPost('winback_contacts', { email: target.email, full_name: target.name || null, organization_name: orgName, consent_to_contact: true, note: payload.winback_note ? String(payload.winback_note).slice(0, 500) : null, recorded_by: member.id });
+        } catch (e) {
+          return respond(500, { ok: false, message: 'Could not record the win-back contact, so nothing was deleted. (' + String(e.message).slice(0, 160) + ')' });
+        }
+      }
       try {
         await supaDelete(`team_members?id=eq.${user_id}`);
       } catch (e) {
         return respond(409, { ok: false, message: 'Could not delete: the database still has records linked to this user. Deactivate them instead. (' + String(e.message).slice(0, 200) + ')' });
       }
       return respond(200, { ok: true, deleted_email: target.email });
+    }
+
+    // BUILD 90: platform-admin tools — editable credit rates, per-report AI cost, win-back list.
+    if (action === 'get-credit-rates' || action === 'set-credit-rate' || action === 'report-costs' || action === 'list-winback') {
+      if (!isPlatform) return respond(403, { ok: false, message: 'Only the platform admin can do this.' });
+      if (action === 'get-credit-rates') {
+        await refreshRates(true);
+        return respond(200, { ok: true, rates: Object.keys(DEFAULT_PRICES).map((k) => ({ action_key: k, credits: PRICES[k], default_credits: DEFAULT_PRICES[k] })) });
+      }
+      if (action === 'set-credit-rate') {
+        const key = String(payload.action_key || '');
+        const val = Number(payload.credits);
+        if (!Object.prototype.hasOwnProperty.call(DEFAULT_PRICES, key)) return respond(400, { ok: false, message: 'Unknown action.' });
+        if (!isFinite(val) || val < 0 || val > 1000) return respond(400, { ok: false, message: 'Credits must be a number from 0 to 1000.' });
+        const rounded = round2(val);
+        const exists = await supaGet(`credit_rates?action_key=eq.${key}&select=action_key`);
+        if (exists.length) await supaPatch(`credit_rates?action_key=eq.${key}`, { credits: rounded, updated_at: new Date().toISOString(), updated_by: member.id });
+        else await supaPost('credit_rates', { action_key: key, credits: rounded, updated_by: member.id });
+        await refreshRates(true);
+        return respond(200, { ok: true, action_key: key, credits: PRICES[key] });
+      }
+      if (action === 'report-costs') {
+        const reps = await supaGet('reports?select=id,report_type,created_at,prospect_id,prospects(company_name)&order=created_at.desc&limit=60');
+        const ids = reps.map((r) => r.id);
+        const costs = ids.length ? await supaGet(`report_ai_cost?report_id=in.(${ids.join(',')})&select=*`) : [];
+        const byId = {}; costs.forEach((c) => { byId[c.report_id] = c; });
+        return respond(200, { ok: true, rows: reps.map((r) => ({ id: r.id, type: r.report_type, created_at: r.created_at, company: r.prospects ? r.prospects.company_name : null, calls: byId[r.id] ? byId[r.id].ai_calls : 0, tokens: byId[r.id] ? Number(byId[r.id].total_tokens) : 0, cost_usd: byId[r.id] ? Number(byId[r.id].ai_cost_usd) : 0 })) });
+      }
+      const wb = await supaGet('winback_contacts?select=*&order=left_at.desc&limit=500');
+      return respond(200, { ok: true, contacts: wb });
     }
 
     if (action === 'set-admin-organizations') {
