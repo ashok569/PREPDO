@@ -1,4 +1,9 @@
 // PREPDO — prospects.js
+// BUILD 21 | 2026-11-22 (Build 90)
+//  - New action 'save-facts-draft': autosaves the Confirmed Facts box (prospects.facts_draft, migration_v29.sql).
+//  - 'create': a new prospect follows the organization switcher (only for an organization the caller may administer).
+//  - 'clear-data': also removes the pasted LinkedIn text and the saved facts draft.
+//
 // BUILD 20 | 2026-10-11 (ships in the Build 89 package)
 // Access made to match the role model (needs _lib.js Build 89 and migration_v28.sql):
 //  - 'get' now has an ownership/scope check (it returned any prospect and its
@@ -104,7 +109,7 @@
 //
 // Request body always includes { session_token, action, ...fields }
 
-const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope, canActOn } = require('./_lib.js');
+const { getMemberFromSession, supaGet, supaPost, supaPatch, supaDelete, respond, handleOptions, getScopeFilter, isInScope, canActOn, canAdministerOrg } = require('./_lib.js');
 
 const isPlatformAdmin = (m) => m.key_type === 'platform_admin';
 // Data actions (backup, clear, restore, delete): the prospect's owner, the platform
@@ -280,7 +285,8 @@ exports.handler = async function (event) {
       }
       const [row] = await supaPost('prospects', {
         owner_id: member.id,
-        organization_id: member.organization_id || null,
+        // BUILD 90: follows the organization switcher, but only for an organization the caller may administer.
+        organization_id: (payload.organization_id && /^[0-9a-f-]{36}$/i.test(payload.organization_id) && canAdministerOrg(member, payload.organization_id)) ? payload.organization_id : (member.organization_id || null),
         company_name,
         company_website: company_website || null,
         prospect_name: prospect_name || null,
@@ -393,6 +399,18 @@ exports.handler = async function (event) {
       return respond(200, { ok: true, prospect: existing[0], reports, action_items: actionItems, stalls_objections: stallsObjections, learnings });
     }
 
+    // BUILD 90: autosaved Confirmed Facts draft (so a lost connection or closed page never loses edits).
+    if (action === 'save-facts-draft') {
+      const { prospect_id, facts } = payload;
+      if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
+      const rows = await supaGet(`prospects?id=eq.${prospect_id}&select=id,owner_id,organization_id`);
+      if (!rows.length) return respond(404, { ok: false, message: 'Prospect not found.' });
+      if (!canActOn(member, rows[0])) return respond(403, { ok: false, message: 'Not authorized.' });
+      const text = String(facts || '').slice(0, 30000);
+      await supaPatch(`prospects?id=eq.${prospect_id}`, { facts_draft: text || null, facts_draft_at: text ? new Date().toISOString() : null });
+      return respond(200, { ok: true, saved_at: text ? new Date().toISOString() : null });
+    }
+
     if (action === 'clear-data') {
       const { prospect_id, confirm_downloaded } = payload;
       if (!prospect_id) return respond(400, { ok: false, message: 'prospect_id required.' });
@@ -430,7 +448,7 @@ exports.handler = async function (event) {
       }
 
       const markedAt = new Date().toISOString();
-      await supaPatch(`prospects?id=eq.${prospect_id}`, { data_cleared_at: markedAt, data_cleared_by: member.id });
+      await supaPatch(`prospects?id=eq.${prospect_id}`, { data_cleared_at: markedAt, data_cleared_by: member.id, linkedin_paste: null, facts_draft: null, facts_draft_at: null });
       return respond(200, { ok: true, cleared, data_cleared_at: markedAt });
     }
 
