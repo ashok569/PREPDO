@@ -1,4 +1,9 @@
 // PREPDO — presales-generate-start.js
+// BUILD 90 | 2026-11-22
+// No double charge: if a report for this prospect is already pending (started in the last
+// 15 minutes), that report is returned and NOTHING is charged. This covers a double click,
+// a retry after the screen lost contact, or a page reload while the report is still running.
+//
 // BUILD 23 | 2026-10-11 (ships in the Build 89 package)
 // Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
 // run this — the platform admin, the owner, or LMI staff for their HOME organization —
@@ -96,6 +101,11 @@ exports.handler = async function (event) {
     if (!canActOn(member, prospectRows[0])) {
       return respond(403, { ok: false, message: 'Not authorized.' });
     }
+
+    // BUILD 90: already running? return it, do not charge again.
+    const since = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const running = await supaGet(`reports?prospect_id=eq.${prospect_id}&report_type=eq.presales_prep&status=eq.pending&created_at=gte.${encodeURIComponent(since)}&select=id&order=created_at.desc&limit=1`);
+    if (running.length) return respond(200, { ok: true, report_id: running[0].id, already_running: true });
 
     const paid = await charge(member, 'report');
     if (!paid.ok) return respond(403, { ok: false, code: paid.code, message: paid.message });
