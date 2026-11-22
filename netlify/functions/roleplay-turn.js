@@ -1,4 +1,6 @@
 // PREPDO — roleplay-turn.js
+// BUILD 90 | 2026-11-22: the persona now loads the WHOLE latest Presales report (facts, detailed, summary,
+// key things, points to ponder, SPIN) and is told to stay consistent with the Confirmed Facts.
 // BUILD 34 | 2026-10-11 (ships in the Build 89 package)
 // Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
 // run this — the platform admin, the owner, or LMI staff for their HOME organization —
@@ -117,8 +119,19 @@ Contact: ${prospectSnapshot.prospect_name || '(unnamed)'}, ${prospectSnapshot.po
 Confirmed Facts:
 ${presalesContext.confirmed_facts || '(none recorded)'}
 
-Strategy notes (for your own grounding only — you, the persona, don't know this exists; it's context for how you'd realistically think and react):
-${presalesContext.ai_output_detailed || '(none)'}`;
+The salesperson's own preparation for this meeting (for your own grounding only — you, the persona, don't know this exists; it's context for how you'd realistically think and react):
+--- Detailed strategy ---
+${presalesContext.ai_output_detailed || '(none)'}
+--- Summary ---
+${presalesContext.ai_output_summary || '(none)'}
+--- Key things to keep in mind ---
+${presalesContext.ai_output_extra || '(none)'}
+--- Points to ponder ---
+${presalesContext.ai_output_ponder || '(none)'}
+--- Questions the salesperson plans to ask ---
+${presalesContext.ai_output_spin || '(none)'}
+
+CONSISTENCY RULE: Everything above about this company and contact is established fact for this roleplay. Never contradict the Confirmed Facts (names, roles, numbers, history, situation). Where the facts are silent, invent only what fits them. Do not reveal this preparation exists or quote it.`;
   } else if (scenario.mode === 'prospect_tied') {
     groundingBlock = `CONTEXT: Company: ${prospectSnapshot.company_name}. Contact: ${prospectSnapshot.prospect_name || '(unnamed)'}, ${prospectSnapshot.position || '(role unknown)'}. No detailed research exists yet — invent a plausible, specific, internally consistent persona and situation (industry specifics, rough size, likely pressures) consistent only with the company name and role given.`;
   } else {
@@ -199,7 +212,7 @@ exports.handler = async function (event) {
     let presalesContext = null;
     if (scenario.mode === 'prospect_tied' && report.prospect_id) {
       const latestPresales = await supaGet(
-        `reports?prospect_id=eq.${report.prospect_id}&report_type=eq.presales_prep&status=eq.complete&select=confirmed_facts,ai_output_detailed&order=created_at.desc&limit=1`
+        `reports?prospect_id=eq.${report.prospect_id}&report_type=eq.presales_prep&status=eq.complete&select=id,created_at,confirmed_facts,ai_output_detailed,ai_output_summary,ai_output_extra,ai_output_ponder,ai_output_spin&order=created_at.desc&limit=1`
       );
       if (latestPresales.length) presalesContext = latestPresales[0];
     }
