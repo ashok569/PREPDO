@@ -1,4 +1,6 @@
 // PREPDO — roleplay-start.js
+// BUILD 90 | 2026-11-22: records which Presales report was loaded (id and date) in the session and
+// returns it, so the screen can show "Loaded: Presales report dated ...".
 // BUILD 30 | 2026-10-11 (ships in the Build 89 package)
 // Uses canActOn() instead of isInScope() (_lib.js 26): the same rule as before for who may
 // run this — the platform admin, the owner, or LMI staff for their HOME organization —
@@ -100,7 +102,7 @@ exports.handler = async function (event) {
       }
 
       const latestPresales = await supaGet(
-        `reports?prospect_id=eq.${prospect_id}&report_type=eq.presales_prep&status=eq.complete&select=confirmed_facts,ai_output_detailed&order=created_at.desc&limit=1`
+        `reports?prospect_id=eq.${prospect_id}&report_type=eq.presales_prep&status=eq.complete&select=id,created_at&order=created_at.desc&limit=1`
       );
       if (latestPresales.length) {
         presalesContext = latestPresales[0];
@@ -120,7 +122,9 @@ exports.handler = async function (event) {
           prospect_name: prospectContext.prospect_name,
           position: prospectContext.position
         } : null,
-        had_presales_context: !!presalesContext
+        had_presales_context: !!presalesContext,
+        presales_report_id: presalesContext ? presalesContext.id : null,
+        presales_report_date: presalesContext ? presalesContext.created_at : null
       },
       conversation: []
     });
@@ -140,6 +144,7 @@ exports.handler = async function (event) {
     return respond(200, {
       ok: true,
       report_id: report.id,
+      presales_loaded: presalesContext ? { id: presalesContext.id, created_at: presalesContext.created_at } : null,
       scene_ready_message: sceneReadyMessage
     });
   } catch (err) {
