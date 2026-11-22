@@ -1,4 +1,5 @@
 // PREPDO — presales-research-background.js
+// BUILD 90 | 2026-11-22: writes progress_done / progress_total (migration_v29.sql) as each topic finishes.
 // BUILD 2 | 2026-09-11
 // Real gap fixed, per direct feedback: a genuinely failed topic
 // previously required the USER to click "Retry Failed Topics" as the
@@ -228,8 +229,20 @@ exports.handler = async function (event) {
     // Batch 1 first, fully, before batch 2 starts — this is what the
     // frontend's "digging deeper" transition is actually watching for
     // (batch 1's results landing in structured_data).
+    // BUILD 90: real progress. Each finished topic bumps progress_done (out of 12) on the report
+    // row so the screen can show "7 of 12 done" and a bar. Never allowed to break the research.
+    let doneCount = 0;
+    const totalTopics = TOPICS_BATCH_1.length + TOPICS_BATCH_2.length;
+    const runTopic = async (topic) => {
+      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position);
+      doneCount += 1;
+      const mine = doneCount;
+      try { await supaPatch(`reports?id=eq.${report_id}`, { progress_done: mine, progress_total: totalTopics }); } catch (e) { /* progress is cosmetic */ }
+      return res;
+    };
+    try { await supaPatch(`reports?id=eq.${report_id}`, { progress_done: 0, progress_total: totalTopics }); } catch (e) { /* cosmetic */ }
     const batch1Results = await Promise.allSettled(
-      TOPICS_BATCH_1.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position))
+      TOPICS_BATCH_1.map((topic) => runTopic(topic))
     );
     const batch1Sections = batch1Results.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
@@ -241,7 +254,7 @@ exports.handler = async function (event) {
     });
 
     const batch2Results = await Promise.allSettled(
-      TOPICS_BATCH_2.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position))
+      TOPICS_BATCH_2.map((topic) => runTopic(topic))
     );
     const batch2Sections = batch2Results.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
