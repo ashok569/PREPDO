@@ -1,4 +1,6 @@
 // PREPDO — roleplay-debrief-background.js
+// BUILD 90 | 2026-11-22: when the roleplay was loaded with a Presales report, the debrief compares the
+// performance with that plan ("Against your Presales plan" inside DETAILED).
 // BUILD 47 | 2026-10-11 (ships with the Build 89 package)
 // The credit is now charged only AFTER the debrief has been saved. Before, it was charged
 // first, so a debrief that was generated but could not be saved (a missing database column)
@@ -244,9 +246,21 @@ exports.handler = async function (event) {
     const scenario = report.structured_data?.scenario;
     const transcript = formatTranscript(report.conversation || []);
 
+    // BUILD 90: if this roleplay was loaded with a Presales report, compare performance with that plan.
+    let planBlock = '';
+    const planId = report.structured_data?.presales_report_id;
+    if (planId) {
+      try {
+        const pr = await supaGet(`reports?id=eq.${planId}&select=created_at,confirmed_facts,ai_output_summary,ai_output_spin`);
+        if (pr.length) {
+          planBlock = `\n\nTHE SALESPERSON'S PRESALES PLAN FOR THIS PROSPECT (report dated ${String(pr[0].created_at).slice(0, 10)}). The simulated prospect was played consistently with these facts:\nConfirmed facts:\n${pr[0].confirmed_facts || '(none)'}\n\nPlan summary:\n${pr[0].ai_output_summary || '(none)'}\n\nQuestions the salesperson had planned to ask:\n${pr[0].ai_output_spin || '(none)'}\n\nIn the DETAILED section, include a short paragraph headed "Against your Presales plan": which planned questions and priorities the salesperson actually used, which important planned points they skipped, and whether they made use of the facts they already knew (e.g. avoided asking what the research already answered, or built on it).`;
+        }
+      } catch (e) { /* the debrief still works without the comparison */ }
+    }
+
     const prompt = `A salesperson practiced a live sales roleplay conversation. Here is the scenario setup and the full transcript.
 
-SCENARIO: ${scenario ? JSON.stringify(scenario) : '(not recorded)'}
+SCENARIO: ${scenario ? JSON.stringify(scenario) : '(not recorded)'}${planBlock}
 
 TRANSCRIPT:
 ${transcript}
