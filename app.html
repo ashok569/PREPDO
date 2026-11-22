@@ -1,6 +1,13 @@
 <!DOCTYPE html>
 <!--
   PREPDO — app.html
+  BUILD 90.1 | 2026-11-22
+  PDF built from text (jsPDF, jspdf.umd.min.js beside this file) with one Download menu; AI notice in the
+  footer and in Word/PDF footers; Presales research: progress "N of 12" with bar, Retry, Use saved
+  research, autosaved Confirmed Facts; roleplay: "Practise this meeting", link a prospect, warning when no
+  Presales report, loaded-report note; pending/failed reports deletable; User Setup: members-only for client
+  admin, wider email box, copy buttons, Delete hidden above your tier, win-back checkbox, credit rates and
+  AI cost panel (platform admin); new prospect follows the organization switcher; Back to Settings.
   BUILD 89 | 2026-10-11 (stage 1: access and organizations)
   Added 2026-10-13: every report screen (Presales Prep, Meeting Analysis, Roleplay debrief) and
   every PDF / Word download now carries a notice that the report is AI-generated and that
@@ -1214,7 +1221,7 @@
     display: block; font-size: 12px; font-weight: 600; letter-spacing: 0.4px;
     text-transform: uppercase; color: var(--ink-soft); margin: 14px 0 6px;
   }
-  input[type="text"], textarea, select {
+  input[type="text"], input[type="email"], textarea, select {
     width: 100%; padding: 10px 12px; font-size: 14px;
     border: 1px solid var(--line); border-radius: 3px; background: var(--paper);
     color: var(--ink); font-family: inherit;
@@ -1353,7 +1360,7 @@
      decoration — saveAsPdf() checks for its presence and fails with a
      clear message rather than silently doing nothing if this ever
      fails to load. -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha512-GsLlZN/3F2ErC5ifS5QtgpiJtWd43JWSuIgh7mbzZ8zBps+dvLusV+eNQATqgA/HdeKFVgA5v3S/cIrLF7QnIg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="jspdf.umd.min.js"></script>
 </head>
 <body>
 
@@ -1639,6 +1646,13 @@
       </div>
     </div>
 
+    <div id="researchRetryBox" class="hidden card" style="border-left:3px solid #C87A3E;">
+      <div id="researchRetryMsg" style="margin-bottom:12px;"></div>
+      <button id="researchRetryBtn">Retry</button>
+      <button id="researchUseSavedBtn" class="secondary hidden" style="margin-left:8px;"></button>
+      <button id="researchRunAgainBtn" class="secondary" style="margin-left:8px;">Run research again</button>
+      <button id="researchUseDraftBtn" class="secondary hidden" style="margin-left:8px;">Restore my last typed facts</button>
+    </div>
     <div id="researchLoading" class="hidden spinner-msg">
       <div class="spinner-orbit"><div class="spinner-track"></div><div class="spinner-rotator"><div class="spinner-bubble"></div></div></div>
       Searching the web for company information...
@@ -1675,9 +1689,10 @@
         <button class="tab-btn" data-tab="spin">SPIN Questions</button>
       </div>
       <div style="margin: 16px 0; padding-bottom: 16px; border-bottom: 1px solid var(--line);">
+        <button class="secondary" id="practiseMeetingBtn" style="margin-right:8px;">Practise this meeting</button>
         <button class="secondary" id="saveWordAllBtn">Download Word</button>
         <button class="secondary" id="savePdfAllBtn">Download PDF</button>
-        <div class="subtle" id="downloadAllStatus" style="margin-top: 6px;">Saves all five sections in one document, in order. Word can be edited directly in MS Word; PDF is fixed layout.</div>
+        <div class="subtle" id="downloadAllStatus" style="margin-top: 6px;">Saves all five sections in one document, in order. Choose Word (editable) or PDF (fixed layout) from the Download menu.</div>
       </div>
       <div class="tab-panel active" id="panel-detailed">
         <div class="report-content" id="content-detailed"></div>
@@ -1890,7 +1905,7 @@
       <div style="margin: 16px 0; padding-bottom: 16px; border-bottom: 1px solid var(--line);">
         <button class="secondary" id="ma_saveWordBtn">Download Word</button>
         <button class="secondary" id="ma_savePdfBtn">Download PDF</button>
-        <div class="subtle" id="maDownloadStatus" style="margin-top: 6px;">Saves all sections in one document, in order. Word can be edited directly in MS Word; PDF is fixed layout.</div>
+        <div class="subtle" id="maDownloadStatus" style="margin-top: 6px;">Saves all sections in one document, in order. Choose Word (editable) or PDF (fixed layout) from the Download menu.</div>
       </div>
       <div class="ma-tab-panel active" id="ma-panel-detailed"><div class="report-content" id="ma-content-detailed"></div></div>
       <div class="ma-tab-panel" id="ma-panel-summary"><div class="report-content" id="ma-content-summary"></div></div>
@@ -1916,6 +1931,12 @@
       <label>Describe the scenario</label>
       <div class="section-hint">E.g. "SPIN-based roleplay with a ₹100cr manufacturing company in Gurgaon" — the AI will invent a plausible, specific company and persona from this.</div>
       <textarea id="rp_scenarioDescription" style="min-height: 90px;" placeholder="Describe who you're meeting and their situation..."></textarea>
+      <div id="rpLinkProspectBox" style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+        <label>Or practise a meeting with one of your prospects</label>
+        <div class="section-hint">The AI then plays that prospect using your Presales report for them, so the practice matches your real meeting. Leave as "No" for a made-up company.</div>
+        <select id="rp_linkProspect"><option value="">No &mdash; invent a company from my description</option></select>
+        <div class="subtle" id="rpLinkProspectNote" style="margin-top:6px;"></div>
+      </div>
     </div>
 
     <div class="card" id="rpProspectCard" style="display:none;">
@@ -2288,6 +2309,11 @@
         <button id="ledgerCheckBtn" class="secondary" style="width:auto; padding:6px 14px; margin:0; font-size:12px;">Check credit ledger</button>
         <span class="subtle" id="ledgerCheckStatus" style="margin-left:8px;"></span>
       </div>
+      <div id="platformToolsBox" class="hidden" style="margin-top:10px;">
+        <button id="ratesToggleBtn" class="secondary" style="width:auto; padding:6px 14px; margin:0; font-size:12px;">Credit rates and AI cost</button>
+        <button id="winbackBtn" class="secondary" style="width:auto; padding:6px 14px; margin:0 0 0 6px; font-size:12px;">Win-back list</button>
+        <div id="platformToolsBody" class="hidden card" style="margin-top:8px;"></div>
+      </div>
       <div style="overflow-x:auto; margin-top:8px;">
         <table style="width:100%; border-collapse:collapse; font-size:13px;">
           <thead>
@@ -2324,6 +2350,7 @@
           <span class="subtle" id="userManagedOrgStatus" style="margin-left:8px;"></span>
         </div>
         <div id="userManageBox" style="margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+          <label id="winbackConsentRow" style="display:flex; align-items:center; gap:8px; text-transform:none; letter-spacing:0; font-weight:500; font-size:13px; margin:0 0 8px;"><input type="checkbox" id="winbackConsent" style="width:auto;"> This person agreed to be contacted later (adds them to the win-back list if you delete them)</label>
           <div style="display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;">
             <button id="userToggleActiveBtn" class="secondary" style="width:auto; padding:9px 18px; margin:0;">Deactivate</button>
             <div style="flex:1; min-width:240px;">
@@ -2356,9 +2383,11 @@
       <label>Setup Link</label>
       <div class="subtle" style="margin-bottom:8px;">They just click this and confirm their email — no console, no manual steps.</div>
       <textarea id="userSetupUrlBox" readonly style="min-height:50px; font-family:monospace; font-size:13px;"></textarea>
+      <button type="button" class="secondary small copy-btn" data-copy-from="userSetupUrlBox" title="Copy to clipboard" style="margin-top:6px;">&#128203; Copy link</button>
       <label style="margin-top:14px;">Access Token (fallback only)</label>
       <div class="subtle" style="margin-bottom:8px;">Only needed if the link above doesn't come through cleanly — they can enter this manually via "Have an access token instead?" on the login page, along with their email.</div>
       <textarea id="userSetupTokenBox" readonly style="min-height:50px; font-family:monospace; font-size:13px;"></textarea>
+      <button type="button" class="secondary small copy-btn" data-copy-from="userSetupTokenBox" title="Copy to clipboard" style="margin-top:6px;">&#128203; Copy token</button>
     </div>
   </div>
 
@@ -2510,6 +2539,7 @@
 
 <footer style="text-align: center; padding: 24px; color: #9B9B94; font-size: 11px;">
   &copy; Ashok Thussu, All rights reserved &middot; PREPDO v2.0
+  <div style="max-width: 760px; margin: 8px auto 0; font-size: 10.5px; line-height: 1.45;">This content was generated by an artificial intelligence (AI) system. PREPDO uses AI models from Anthropic to produce its reports and coaching. It is AI-generated, not written by a person, and may contain errors. Use it as guidance for your own learning and development, and check facts and figures before you rely on them. It is not legal, financial, or employment advice.</div>
 </footer>
 
 <script>
@@ -2714,7 +2744,7 @@
       <hr/>
     `;
     const aiNotice = `<div style="background:#F3F0E8; border-left:3px solid #C87A3E; padding:8pt 10pt; margin:0 0 12pt; font-size:9.5pt; color:#3A4B78;"><b>AI-generated coaching report.</b> PREPDO is an AI sales coaching tool. This report was produced by AI to help you learn and grow as a seller. Use it as guidance for your own development, not as a firm opinion or a prediction.</div>`;
-    const footer = `<div class="doc-footer">&copy; Ashok Thussu, All rights reserved &middot; PREPDO v2.0</div>`;
+    const footer = `<div class="doc-footer">&copy; Ashok Thussu, All rights reserved &middot; PREPDO v2.0<br/><span style="font-size:7pt;">${AI_NOTICE_FOOTER}</span></div>`;
     return `${title}${meta}${aiNotice}${htmlContent}${footer}`;
   }
 
@@ -2738,66 +2768,265 @@
     URL.revokeObjectURL(url);
   }
 
-  // Genuine PDF, not a renamed webpage — html2pdf.js renders an actual
-  // DOM element (via html2canvas + jsPDF under the hood) into a real
-  // PDF file, entirely client-side, no server round-trip. Uses a
-  // hidden, off-screen container so nothing flickers on-screen during
-  // generation.
-  //
-  // BUILD 47: abandoned the hidden-DOM-element approach entirely after
-  // TWO real, confirmed failures in a row (blank PDF, then genuine
-  // content visibly leaking onto the real page — meaning the "hide
-  // it" CSS trick was never actually working reliably in the first
-  // place, regardless of which positioning approach was tried). Rather
-  // than keep guessing at CSS visibility edge cases, this now builds a
-  // complete, standalone HTML string and hands it directly to
-  // html2pdf()'s own .from() method, which accepts a raw HTML string
-  // as documented — the library manages its own internal, contained
-  // rendering process rather than me manually inserting and hiding an
-  // element on the real page at all. Removes the entire category of
-  // bug, not just another attempt at the same category.
-  async function saveAsPdf(filename, sectionLabel, prospect, htmlContent, category, statusEl) {
-    if (typeof html2pdf === 'undefined') {
-      alert('PDF library failed to load — check your internet connection and try again.');
-      return;
+  // ---------- PDF built from the report TEXT (Build 90) ----------
+  // The old export took pictures of the page (3x PNG) and put them in a PDF:
+  // 278 MB for a long report, last letters clipped, lines sliced. This builds
+  // the PDF directly from the report's text with jsPDF (loaded from
+  // jspdf.umd.min.js, same folder as app.html): real text, a few hundred KB,
+  // nothing clipped, page breaks between lines. LATIN SCRIPT ONLY for now
+  // (standard PDF fonts); a report with Hindi/Arabic/etc. is refused with a
+  // clear message and Word remains the route for those.
+  const PDF_NAVY = [20, 33, 61], PDF_ACCENT = [200, 122, 62], PDF_GREY = [107, 107, 99], PDF_LINE = [220, 220, 214];
+  const PDF_ALLOWED_EXTRA = new Set([0x2018, 0x2019, 0x201A, 0x201C, 0x201D, 0x201E, 0x2013, 0x2014, 0x2022, 0x2026, 0x20AC, 0x2122, 0x2020, 0x2021, 0x2030]);
+  const PDF_REPLACE = [[/₹/g, 'Rs '], [/→/g, '->'], [/←/g, '<-'], [/≥/g, '>='], [/≤/g, '<='], [/‑/g, '-'], [/−/g, '-'], [/[    ]/g, ' '], [/[​-‍﻿]/g, ''], [/[✓✔]/g, '(yes)'], [/✗|✘/g, '(no)'], [/≈/g, '~'], [/×/g, 'x']];
+
+  function pdfSafeText(s) {
+    let t = String(s == null ? '' : s);
+    PDF_REPLACE.forEach(function (r) { t = t.replace(r[0], r[1]); });
+    let out = '', nonLatin = 0;
+    for (const ch of t) {
+      const c = ch.codePointAt(0);
+      if (c === 9 || c === 10 || c === 13 || (c >= 32 && c <= 255) || PDF_ALLOWED_EXTRA.has(c)) { out += ch; continue; }
+      // letters from another script (Devanagari, Arabic, CJK, Cyrillic, Greek...) cannot be drawn
+      if (/\p{L}|\p{M}/u.test(ch)) { nonLatin++; out += '?'; continue; }
+      if (c > 0xFFFF || /\p{Extended_Pictographic}/u.test(ch)) { continue; } // emoji: drop
+      out += '?';
     }
-    if (statusEl) { statusEl.textContent = 'Generating PDF...'; statusEl.className = 'subtle'; }
+    return { text: out, nonLatin: nonLatin };
+  }
 
-    const fullHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
-      <style>
-        body { width: 700px; margin: 0; padding: 0; }
-        ${buildReportStyle()}
-      </style>
-      </head><body>${buildReportBodyHtml(sectionLabel, prospect, htmlContent, category)}</body></html>`;
+  // Draws the document. parts = { sectionLabel, category, prospect, bodyHtml, aiNoticeTop, copyrightLine, aiNoticeFooter }
+  // Returns { blob, bytes, pages } or throws Error('NON_LATIN') / Error('NO_LIB').
+  function pdfBuildFromHtml(parts, JsPDF) {
+    if (!JsPDF) throw new Error('NO_LIB');
+    const doc = new JsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait', compress: true });
+    const PW = 210, PH = 297, ML = 18, MR = 18, MT = 18, MB = 30;
+    const CW = PW - ML - MR;
+    let y = MT, nonLatinTotal = 0;
 
+    function safe(s) { const r = pdfSafeText(s); nonLatinTotal += r.nonLatin; return r.text; }
+    function setStyle(size, bold, italic, color) {
+      doc.setFont('helvetica', bold && italic ? 'bolditalic' : bold ? 'bold' : italic ? 'italic' : 'normal');
+      doc.setFontSize(size);
+      doc.setTextColor.apply(doc, color || PDF_NAVY);
+    }
+    const mmPerPt = 0.3528;
+    function lineH(size) { return size * mmPerPt * 1.42; }
+    function ensure(h) { if (y + h > PH - MB) { doc.addPage(); y = MT; } }
+
+    // runs: [{t, b, i}]; draws a wrapped paragraph; opts: size, color, indent, bullet, gapAfter, align
+    function flow(runs, o) {
+      o = o || {};
+      const size = o.size || 10.5, indent = o.indent || 0, lh = lineH(size);
+      const left = ML + indent, width = CW - indent;
+      // tokens: words with style, or hard breaks
+      const tokens = [];
+      runs.forEach(function (r) {
+        if (r.br) { tokens.push({ br: true }); return; }
+        const parts = String(r.t).split(/(\s+)/);
+        parts.forEach(function (p) {
+          if (p === '') return;
+          if (/^\s+$/.test(p)) tokens.push({ sp: true, b: r.b, i: r.i });
+          else tokens.push({ w: p, b: r.b || o.bold, i: r.i || o.italic });
+        });
+      });
+      function wid(tk) { setStyle(size, tk.b, tk.i); return doc.getTextWidth(tk.sp ? ' ' : tk.w); }
+      const lines = []; let cur = [], curW = 0;
+      function pushLine() { while (cur.length && cur[cur.length - 1].sp) cur.pop(); lines.push(cur); cur = []; curW = 0; }
+      tokens.forEach(function (tk) {
+        if (tk.br) { pushLine(); return; }
+        if (tk.sp) { if (cur.length) { const w = wid(tk); cur.push({ sp: true, b: tk.b, i: tk.i, width: w }); curW += w; } return; }
+        let w = wid(tk);
+        if (w > width) { // a very long word (URL): break by characters
+          let rest = tk.w;
+          while (rest.length) {
+            let n = rest.length;
+            setStyle(size, tk.b, tk.i);
+            while (n > 1 && doc.getTextWidth(rest.slice(0, n)) > (width - curW)) n--;
+            if (curW > 0 && doc.getTextWidth(rest.slice(0, n)) > (width - curW)) { pushLine(); continue; }
+            const piece = rest.slice(0, n); const pw = doc.getTextWidth(piece);
+            cur.push({ w: piece, b: tk.b, i: tk.i, width: pw }); curW += pw; rest = rest.slice(n);
+            if (rest.length) pushLine();
+          }
+          return;
+        }
+        if (curW + w > width && cur.length) pushLine();
+        cur.push({ w: tk.w, b: tk.b, i: tk.i, width: w }); curW += w;
+      });
+      if (cur.length) pushLine();
+      if (!lines.length) lines.push([]);
+      lines.forEach(function (ln, idx) {
+        ensure(lh);
+        if (idx === 0 && o.bullet) { setStyle(size, false, false, o.color); doc.text(o.bullet, left - 4.2, y + size * mmPerPt * 0.9); }
+        let x = left;
+        ln.forEach(function (tk) {
+          if (tk.sp) { x += tk.width; return; }
+          setStyle(size, tk.b, tk.i, o.color);
+          doc.text(tk.w, x, y + size * mmPerPt * 0.9);
+          x += tk.width;
+        });
+        y += lh;
+      });
+      y += (o.gapAfter == null ? 1.6 : o.gapAfter);
+    }
+
+    function rule(color) { ensure(3); doc.setDrawColor.apply(doc, color || PDF_LINE); doc.setLineWidth(0.25); doc.line(ML, y + 1, PW - MR, y + 1); y += 3.5; }
+
+    // ---- HTML -> blocks ----
+    const dom = new DOMParser().parseFromString('<!DOCTYPE html><html><body>' + parts.bodyHtml + '</body></html>', 'text/html');
+    function inline(node, st, out) {
+      node.childNodes.forEach(function (n) {
+        if (n.nodeType === 3) { const t = safe(n.nodeValue.replace(/\s+/g, ' ')); if (t) out.push({ t: t, b: st.b, i: st.i }); return; }
+        if (n.nodeType !== 1) return;
+        const tag = n.tagName;
+        if (tag === 'BR') { out.push({ br: true }); return; }
+        if (tag === 'STYLE' || tag === 'SCRIPT') return;
+        const ns = { b: st.b || tag === 'B' || tag === 'STRONG', i: st.i || tag === 'I' || tag === 'EM' };
+        inline(n, ns, out);
+      });
+      return out;
+    }
+    const BLOCKS = new Set(['DIV', 'P', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HR', 'TABLE', 'LI']);
+    function hasBlockChild(el) { return Array.prototype.some.call(el.children, function (c) { return BLOCKS.has(c.tagName); }); }
+    function trimRuns(r) { while (r.length && r[0].t != null && !r[0].br && !String(r[0].t).trim()) r.shift(); while (r.length && r[r.length - 1].t != null && !String(r[r.length - 1].t).trim()) r.pop(); return r; }
+
+    function block(el, depth) {
+      const tag = el.tagName;
+      if (tag === 'STYLE' || tag === 'SCRIPT') return;
+      if (tag === 'H1' || tag === 'H2') { const r = trimRuns(inline(el, {}, [])); if (!r.length) return; ensure(18); y += 2.5; flow(r, { size: 14, bold: true, gapAfter: 0.8 }); rule(PDF_LINE); return; }
+      if (tag === 'H3') { const r = trimRuns(inline(el, {}, [])); if (!r.length) return; ensure(16); y += 2; flow(r, { size: 12.5, bold: true, gapAfter: 0.8 }); rule(PDF_LINE); return; }
+      if (tag === 'H4' || tag === 'H5' || tag === 'H6') { const r = trimRuns(inline(el, {}, [])); if (!r.length) return; ensure(14); y += 1.5; flow(r, { size: 11, bold: true, color: PDF_ACCENT, gapAfter: 1 }); return; }
+      if (tag === 'HR') { rule(PDF_LINE); return; }
+      if (tag === 'UL' || tag === 'OL') {
+        let n = 0;
+        Array.prototype.forEach.call(el.children, function (li) {
+          if (li.tagName !== 'LI') { block(li, depth + 1); return; }
+          n++;
+          const r = trimRuns(inline(li, {}, []));
+          flow(r, { size: 10.5, indent: 5 + depth * 5, bullet: tag === 'OL' ? n + '.' : '•', gapAfter: 1 });
+        });
+        y += 0.8; return;
+      }
+      if (tag === 'TABLE') {
+        el.querySelectorAll('tr').forEach(function (tr) {
+          const cells = Array.prototype.map.call(tr.children, function (c) { return safe(c.textContent.replace(/\s+/g, ' ').trim()); });
+          flow([{ t: cells.join('  |  ') }], { size: 10, gapAfter: 1 });
+        });
+        y += 1; return;
+      }
+      if (tag === 'DIV' || tag === 'P' || tag === 'LI') {
+        const cls = el.getAttribute('class') || '';
+        if (cls.indexOf('score-box') >= 0) { // the score box, written as plain text so it can never come out empty
+          const num = safe((el.querySelector('.num') || {}).textContent || '-'), lbl = safe((el.querySelector('.lbl') || {}).textContent || 'Score');
+          flow([{ t: lbl + ': ', b: true }, { t: num, b: true }], { size: 12.5, color: PDF_ACCENT, gapAfter: 1.2 });
+          return;
+        }
+        if (hasBlockChild(el)) { Array.prototype.forEach.call(el.children, function (c) { block(c, depth); }); return; }
+        const r = trimRuns(inline(el, {}, []));
+        if (!r.length) return;
+        if (cls.indexOf('doc-footer') >= 0) return; // footer is drawn on every page instead
+        flow(r, { size: cls.indexOf('meta') >= 0 ? 10.5 : 10.5, gapAfter: cls.indexOf('meta') >= 0 ? 0.6 : 2 });
+        return;
+      }
+      Array.prototype.forEach.call(el.children, function (c) { block(c, depth); });
+    }
+
+    // ---- title block ----
+    setStyle(20, true, false); const brandA = 'PREP';
+    doc.text(brandA, ML, y + 7); const wA = doc.getTextWidth(brandA);
+    doc.setTextColor.apply(doc, PDF_ACCENT); doc.text('DO', ML + wA, y + 7); const wB = doc.getTextWidth('DO');
+    setStyle(14, false, false, PDF_NAVY); doc.text(' – ' + safe(parts.sectionLabel), ML + wA + wB, y + 7);
+    y += 11;
+    setStyle(9, false, false, [58, 75, 120]); doc.text(safe((parts.category || 'Presales Prep Report').toUpperCase()), ML, y + 2); y += 7;
+    const p = parts.prospect || {};
+    flow([{ t: 'Company: ', b: true }, { t: safe(p.company_name || '') }], { gapAfter: 0.6 });
+    flow([{ t: 'Contact: ', b: true }, { t: safe((p.prospect_name || '(not specified)') + (p.position ? ', ' + p.position : '')) }], { gapAfter: 0.6 });
+    flow([{ t: 'Meeting Objective: ', b: true }, { t: safe(p.meeting_objective || '(not specified)') }], { gapAfter: 0.6 });
+    rule(PDF_LINE);
+    // AI notice (top)
+    if (parts.aiNoticeTop) {
+      const start = y; const before = y;
+      doc.setFillColor(243, 240, 232);
+      const approx = Math.ceil(safe(parts.aiNoticeTop).length / 105) * lineH(9) + 4;
+      ensure(approx);
+      doc.rect(ML, y, CW, approx, 'F'); doc.setFillColor.apply(doc, PDF_ACCENT); doc.rect(ML, y, 0.9, approx, 'F');
+      y += 2.2; const saveML = ML;
+      flow([{ t: safe(parts.aiNoticeTop) }], { size: 9, color: [58, 75, 120], indent: 3, gapAfter: 0 });
+      y = Math.max(y, start + approx) + 3;
+    }
+
+    dom.body.childNodes.forEach(function (n) {
+      if (n.nodeType === 1) block(n, 0);
+      else if (n.nodeType === 3 && n.nodeValue.trim()) flow([{ t: safe(n.nodeValue.trim()) }]);
+    });
+
+    if (nonLatinTotal > 0) { const e = new Error('NON_LATIN'); e.count = nonLatinTotal; throw e; }
+
+    // ---- footer on every page ----
+    const total = doc.getNumberOfPages();
+    for (let pg = 1; pg <= total; pg++) {
+      doc.setPage(pg);
+      const fy = PH - MB + 6;
+      doc.setDrawColor.apply(doc, PDF_LINE); doc.setLineWidth(0.25); doc.line(ML, fy - 3, PW - MR, fy - 3);
+      setStyle(8, false, false, PDF_GREY);
+      doc.text(safe(parts.copyrightLine), PW / 2, fy, { align: 'center' });
+      setStyle(7, false, false, PDF_GREY);
+      const nl = doc.splitTextToSize(safe(parts.aiNoticeFooter), CW);
+      let ny = fy + 3.6;
+      nl.forEach(function (l) { doc.text(l, PW / 2, ny, { align: 'center' }); ny += 3.1; });
+      doc.text('Page ' + pg + ' of ' + total, PW - MR, PH - 7, { align: 'right' });
+    }
+    const blob = doc.output('blob');
+    return { doc: doc, blob: blob, bytes: blob.size, pages: total };
+  }
+
+  const AI_NOTICE_FOOTER = 'This content was generated by an artificial intelligence (AI) system. PREPDO uses AI models from Anthropic to produce its reports and coaching. It is AI-generated, not written by a person, and may contain errors. Use it as guidance for your own learning and development, and check facts and figures before you rely on them. It is not legal, financial, or employment advice.';
+  const AI_NOTICE_TOP = 'AI-generated coaching report. PREPDO is an AI sales coaching tool. This report was produced by AI to help you learn and grow as a seller. Use it as guidance for your own development, not as a firm opinion or a prediction.';
+
+  // Build 90: single PDF route. Same signature as before so every caller keeps working.
+  async function saveAsPdf(filename, sectionLabel, prospect, htmlContent, category, statusEl) {
+    const say = function (m, err) { if (statusEl) { statusEl.textContent = m; statusEl.className = err ? 'status-msg error' : 'subtle'; } else if (err) alert(m); };
+    const JsPDF = (window.jspdf && window.jspdf.jsPDF) || null;
+    if (!JsPDF) { say('The PDF component did not load. Refresh the page and try again, or use Word.', true); return; }
+    say('Generating PDF...');
     try {
-      // Real bug found via a direct render-and-compare test: html2pdf.js's
-      // default image type is JPEG (lossy) — fine for a screenshot, but visibly
-      // soft on text edges, and inconsistently so (worse on some text/colour
-      // transitions than others), which matches "blurred at times" exactly.
-      // Switched to PNG (lossless) so the rasterised text keeps its actual
-      // edges, and raised the render scale from 2x to 3x for a sharper source
-      // image to start from. This is still a raster capture of the page (a
-      // screenshot placed into a PDF, not real vector text) — deliberately so,
-      // per the BUILD 47 redesign notes above, since it's what lets this stay
-      // a simple, fast, entirely client-side export. PNG at 3x should look
-      // sharp at normal reading and printing sizes; zooming in very far will
-      // still show it's a raster image, which only a genuine PDF-generation
-      // library (a bigger change) would remove entirely.
-      await html2pdf().from(fullHtml, 'string').set({
-        margin: [15, 15, 15, 15],
-        filename: filename + '.pdf',
-        image: { type: 'png' },
-        html2canvas: { scale: 3, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      }).save();
-      if (statusEl) statusEl.textContent = '';
+      await new Promise(function (r) { setTimeout(r, 30); }); // let the status paint
+      const res = pdfBuildFromHtml({
+        sectionLabel: sectionLabel, category: category, prospect: prospect, bodyHtml: htmlContent,
+        aiNoticeTop: AI_NOTICE_TOP, copyrightLine: '\u00A9 Ashok Thussu, All rights reserved \u00B7 PREPDO v2.0', aiNoticeFooter: AI_NOTICE_FOOTER
+      }, JsPDF);
+      const url = URL.createObjectURL(res.blob);
+      const a = document.createElement('a'); a.href = url; a.download = filename + '.pdf';
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      say('');
     } catch (err) {
-      if (statusEl) { statusEl.textContent = 'PDF generation failed: ' + err.message; statusEl.className = 'status-msg error'; }
-      else alert('PDF generation failed: ' + err.message);
+      if (err && err.message === 'NON_LATIN') say('This report contains non-English-script text (e.g. Hindi) that PDF cannot show. Please use Download Word for this one.', true);
+      else say('PDF generation failed: ' + (err && err.message), true);
     }
   }
+
+  // Build 90: one "Download" button with a Word / PDF menu, built over the existing buttons.
+  function makeDownloadMenu(wordId, pdfId) {
+    const w = document.getElementById(wordId), p = document.getElementById(pdfId);
+    if (!w || !p || w.dataset.menu) return;
+    w.dataset.menu = '1';
+    const wrap = document.createElement('span'); wrap.style.cssText = 'position:relative;display:inline-block;';
+    const btn = document.createElement('button'); btn.type = 'button'; btn.className = w.className; btn.style.cssText = w.style.cssText; btn.textContent = 'Download \u25BE';
+    const menu = document.createElement('div'); menu.style.cssText = 'display:none;position:absolute;left:0;top:100%;z-index:50;background:#fff;border:1px solid #DCDCD6;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.12);min-width:170px;margin-top:2px;';
+    [['Word (editable)', w], ['PDF (fixed layout)', p]].forEach(function (it) {
+      const o = document.createElement('div'); o.textContent = it[0]; o.style.cssText = 'padding:9px 14px;cursor:pointer;font-size:14px;color:#14213D;';
+      o.onmouseenter = function () { o.style.background = '#F3F0E8'; }; o.onmouseleave = function () { o.style.background = ''; };
+      o.onclick = function (e) { e.stopPropagation(); menu.style.display = 'none'; it[1].click(); };
+      menu.appendChild(o);
+    });
+    btn.onclick = function (e) { e.stopPropagation(); menu.style.display = menu.style.display === 'none' ? 'block' : 'none'; };
+    document.addEventListener('click', function () { menu.style.display = 'none'; });
+    w.parentNode.insertBefore(wrap, w); wrap.appendChild(btn); wrap.appendChild(menu);
+    w.style.display = 'none'; p.style.display = 'none';
+  }
+
+  ['saveWordAllBtn:savePdfAllBtn','saveWordSpinBtn:savePdfSpinBtn','ma_saveWordBtn:ma_savePdfBtn','rp_saveWordBtn:rp_savePdfBtn'].forEach(function (p) { const q = p.split(':'); makeDownloadMenu(q[0], q[1]); });
 
   function formatDateForFilename(d) {
     const dt = new Date(d);
@@ -3226,6 +3455,7 @@
   $('saveProspectBtn').addEventListener('click', async () => {
     const body = {
       action: 'create',
+      organization_id: state.activeOrgId || undefined, // Build 90: a new prospect follows the organization switcher
       company_name: $('f_company_name').value.trim(),
       company_website: $('f_company_website').value.trim(),
       partner_or_salesperson_name: $('f_partner_or_salesperson_name').value.trim(),
@@ -3298,7 +3528,8 @@
         dateHtml = 'Meeting: ' + new Date(r.meeting_date).toLocaleDateString() + ' &middot; Logged: ' + new Date(r.created_at).toLocaleString();
       }
 
-      const deleteBtn = isLatestOfType ? '' :
+      // Build 90: a pending or failed report may always be deleted, even if it is the latest of its type.
+      const deleteBtn = (isLatestOfType && r.status === 'complete') ? '' :
         '<button class="secondary small" data-delete-report-id="' + r.id + '" style="color:var(--red); border-color:var(--red); margin-left:10px;" onclick="event.stopPropagation();">Delete</button>';
 
       return '<div class="report-history-item" data-report-id="' + r.id + '">' +
@@ -3400,17 +3631,54 @@
     return () => clearInterval(timer);
   }
 
+  // ---------- BUILD 90: research with progress, Retry, saved research, autosaved facts ----------
+  function researchProgressHtml(text, done, total) {
+    let h = spinnerHtml(text);
+    if (total) {
+      const pct = Math.max(2, Math.min(100, Math.round((done / total) * 100)));
+      h += '<div style="margin-top:10px;max-width:360px;"><div style="font-weight:600;font-size:13px;margin-bottom:4px;">' + done + ' of ' + total + ' done</div>'
+        + '<div style="height:10px;background:#E8E4D8;border-radius:5px;overflow:hidden;"><div style="height:10px;width:' + pct + '%;background:#C87A3E;transition:width .6s;"></div></div></div>';
+    }
+    return h;
+  }
+
+  function latestSavedResearch() {
+    const list = (state.currentReports || []).filter(r => r.report_type === 'presales_research' && r.status === 'complete' && r.confirmed_facts);
+    return list.length ? list[0] : null; // reports come newest first
+  }
+
+  // The single place that shows "something went wrong - here is what you can do".
+  // reportId: set when research was started and only the watching stopped (Retry just resumes
+  // watching: nothing is charged again).
+  function showResearchRetry(message, reportId) {
+    $('researchLoading').classList.add('hidden');
+    $('researchResult').classList.remove('hidden');
+    const box = $('researchRetryBox');
+    box.classList.remove('hidden');
+    $('researchRetryMsg').textContent = message;
+    const saved = latestSavedResearch();
+    const useBtn = $('researchUseSavedBtn');
+    if (saved) { useBtn.classList.remove('hidden'); useBtn.textContent = 'Use saved research (dated ' + formatDateForFilename(saved.created_at) + ')'; useBtn.onclick = function () {
+      $('confirmedFactsBox').value = saved.confirmed_facts; state.currentResearchReportId = saved.id; box.classList.add('hidden');
+      $('researchStatus').textContent = 'Saved research from ' + formatDateForFilename(saved.created_at) + ' loaded. No credits used.'; $('researchStatus').className = 'status-msg';
+      scheduleFactsDraftSave();
+    }; } else useBtn.classList.add('hidden');
+    $('researchRetryBtn').onclick = function () { box.classList.add('hidden'); if (reportId) { $('researchResult').classList.add('hidden'); $('researchLoading').classList.remove('hidden'); watchResearch(reportId); } else runFreshResearch(); };
+    $('researchRunAgainBtn').onclick = function () { box.classList.add('hidden'); runFreshResearch(); };
+    const dr = state.currentProspect && state.currentProspect.facts_draft;
+    const drBtn = $('researchUseDraftBtn');
+    if (dr && !$('confirmedFactsBox').value.trim()) { drBtn.classList.remove('hidden'); drBtn.onclick = function () { $('confirmedFactsBox').value = dr; drBtn.classList.add('hidden'); }; } else drBtn.classList.add('hidden');
+  }
+
   async function runFreshResearch() {
     $('researchChoice').classList.add('hidden');
     $('researchLoading').classList.remove('hidden');
     $('researchResult').classList.add('hidden');
+    $('researchRetryBox').classList.add('hidden');
     $('researchStatus').textContent = '';
 
     const p = state.currentProspect;
-
-    // Real gap fixed here: prospect_name/position were never actually
-    // sent, despite the backend's "About the Named Contact" topic
-    // needing them to search for anyone.
+    // Server refuses to charge twice if this prospect's research is already running.
     const startData = await api('presales-research-start', {
       company_name: p.company_name,
       company_website: p.company_website,
@@ -3421,23 +3689,14 @@
     });
 
     if (!startData || !startData.ok) {
-      $('researchLoading').classList.add('hidden');
-      $('researchResult').classList.remove('hidden');
-      $('confirmedFactsBox').value = '';
-      $('researchStatus').textContent = startData ? startData.message : 'Could not start research — you can still type facts manually below.';
-      $('researchStatus').className = 'status-msg error';
+      showResearchRetry((startData && startData.message) || 'Could not start research.', null);
       return;
     }
+    watchResearch(startData.report_id);
+  }
 
-    const reportId = startData.report_id;
-    const maxAttempts = 100; // 100 * 3s = 5 minutes
-
-    // Batch 1 = the foundational topics; batch 2 = the harder-to-find
-    // ones (existing programs, named-gaps, the contact themselves,
-    // awards, customers, operational pain, catch-all). The "digging
-    // deeper" framing only shows once batch 1's real results have
-    // landed (structured_data.batches_complete === 1), so it's an
-    // honest description of what's actually happening, not filler.
+  async function watchResearch(reportId) {
+    const maxAttempts = 120; // 120 * 3s = 6 minutes
     const batch1Messages = [
       'Researching recent news and financial position...',
       'Checking leadership and decision-makers...',
@@ -3447,45 +3706,36 @@
     const batch2Messages = [
       'Digging deeper — checking for existing leadership programs...',
       'Need to check another angle — any gaps the company itself has named...',
-      'Researching the specific person you\u2019re meeting...',
+      'Researching the specific person you’re meeting...',
       'Checking for awards and named customer relationships...',
       'Looking for evidence of real operational pain points...',
       'Wrapping up the final pass...'
     ];
-
-    let attempts = 0;
+    let attempts = 0, netFails = 0;
     const poll = async () => {
       attempts++;
-
       const statusData = await api('check-report-status', { report_id: reportId }, 15000);
       if (!statusData) return;
-
       if (!statusData.ok) {
-        $('researchLoading').classList.add('hidden');
-        $('researchResult').classList.remove('hidden');
-        $('confirmedFactsBox').value = '';
-        $('researchStatus').textContent = statusData.message || 'Research failed — you can still type facts manually below.';
-        $('researchStatus').className = 'status-msg error';
+        netFails++;
+        if (netFails >= 4) { showResearchRetry('The connection was lost while research was running. Your research may still be finishing on the server. Press Retry to check again; you will not be charged again.', reportId); return; }
+        $('researchLoading').innerHTML = spinnerHtml('Reconnecting...');
+        setTimeout(poll, 3000);
         return;
       }
-
+      netFails = 0;
       const report = statusData.report;
       const batchesComplete = report.structured_data?.batches_complete || 0;
 
       if (report.status === 'complete' || report.status === 'failed') {
-        $('researchLoading').classList.add('hidden');
-        $('researchResult').classList.remove('hidden');
-
         if (report.status === 'failed') {
-          $('confirmedFactsBox').value = '';
-          $('researchStatus').textContent = 'Research failed: ' + (report.error_message || 'Unknown error') + ' — you can still type facts manually below.';
-          $('researchStatus').className = 'status-msg error';
+          showResearchRetry('Research failed: ' + (report.error_message || 'Unknown error') + '. Any credits taken for a failed start were returned.', null);
           return;
         }
-
+        $('researchLoading').classList.add('hidden');
+        $('researchResult').classList.remove('hidden');
         $('confirmedFactsBox').value = report.confirmed_facts || '';
         state.currentResearchReportId = report.id;
-
         const failedTopics = (report.structured_data?.research_topics || []).filter((t) => !t.ok);
         $('retryFailedTopicsBtn').classList.toggle('hidden', failedTopics.length === 0);
         if (failedTopics.length > 0) {
@@ -3494,24 +3744,36 @@
         } else {
           $('researchStatus').textContent = '';
         }
+        scheduleFactsDraftSave();
         return;
       }
 
-      // Still pending — pick the right message set based on how far
-      // along the background function actually is, not just elapsed
-      // polling time.
       const messages = batchesComplete >= 1 ? batch2Messages : batch1Messages;
-      $('researchLoading').innerHTML = spinnerHtml(messages[Math.min(Math.floor(attempts / 4), messages.length - 1)]);
+      const txt = messages[Math.min(Math.floor(attempts / 4), messages.length - 1)];
+      $('researchLoading').innerHTML = researchProgressHtml(txt, report.progress_done || 0, report.progress_total || 0);
 
       if (attempts >= maxAttempts) {
-        $('researchLoading').innerHTML = '<div class="status-msg error">This is taking much longer than expected. It may still finish in the background — check back in a few minutes, or try again.</div>';
+        showResearchRetry('This is taking longer than expected. It may still finish on the server. Press Retry to check again; you will not be charged again.', reportId);
         return;
       }
       setTimeout(poll, 3000);
     };
-
     poll();
   }
+
+  // Autosave of the Confirmed Facts box (server + this browser), 1.5 s after the last keystroke.
+  let factsDraftTimer = null;
+  function scheduleFactsDraftSave() {
+    clearTimeout(factsDraftTimer);
+    factsDraftTimer = setTimeout(async function () {
+      const p = state.currentProspect; if (!p) return;
+      const v = $('confirmedFactsBox').value;
+      try { localStorage.setItem('prepdo_facts_draft_' + p.id, v); } catch (e) { /* private mode */ }
+      const r = await api('prospects', { action: 'save-facts-draft', prospect_id: p.id, facts: v });
+      if (r && r.ok) p.facts_draft = v;
+    }, 1500);
+  }
+  $('confirmedFactsBox').addEventListener('input', scheduleFactsDraftSave);
 
   $('quickResearchBtn').addEventListener('click', runFreshResearch);
 
@@ -4463,6 +4725,7 @@
   $('gleanerBackLink').addEventListener('click', () => {
     clearTimeout(gleanerPollTimer);
     showView('list');
+    $('settingsBtn').click(); // Build 90: "Back to Settings" lands on Settings
   });
 
   async function gleanerLoadHistory() {
@@ -4625,19 +4888,18 @@
   function keyTypeOptionsForRole(role) {
     if (role === 'platform_admin') {
       return [
-        { value: 'member', label: 'Member' },
+        { value: 'member', label: 'User' },
         { value: 'org_admin', label: 'Org Admin (LMI staff)' },
         { value: 'institutional_admin', label: 'Institutional Admin (client administrator)' }
       ];
     }
     if (role === 'institutional_admin') {
       return [
-        { value: 'member', label: 'Member' },
-        { value: 'institutional_admin', label: 'Institutional Admin (client administrator)' }
+        { value: 'member', label: 'User' }
       ];
     }
     // org_admin (LMI staff): members only
-    return [{ value: 'member', label: 'Member' }];
+    return [{ value: 'member', label: 'User' }];
   }
 
   $('settingsOpenUserSetupBtn').addEventListener('click', async () => {
@@ -4664,6 +4926,7 @@
     $('userSetupResultWarnings').textContent = '';
     $('userAdjustPanel').classList.add('hidden');
     $('ledgerCheckBox').classList.toggle('hidden', !isPlatformAdminUI());
+    $('platformToolsBox').classList.toggle('hidden', !isPlatformAdminUI());
     $('newUserIndividualBox').classList.toggle('hidden', !(state.userRole === 'platform_admin' || state.userRole === 'org_admin'));
     $('newUserIsIndividual').checked = false;
     userSetupSyncIndividual();
@@ -4679,6 +4942,7 @@
 
   $('userSetupBackLink').addEventListener('click', () => {
     showView('list');
+    $('settingsBtn').click(); // Build 90: "Back to Settings" lands on Settings
   });
 
   async function userSetupLoadOrganizations() {
@@ -4965,7 +5229,7 @@
         : (u.user_segment === 'non_lmi' ? 'All' : '—');
       const low = u.key_type !== 'platform_admin' && u.credits_total !== null && u.credits_total !== undefined && u.credits_remaining <= LOW_CREDITS_ROW;
       return `<tr data-uid="${u.id}" style="cursor:pointer;${u.id === userSetupSelectedId ? ' background:var(--paper); font-weight:600;' : ''}${u.is_active === false ? ' opacity:0.55;' : ''}">` +
-        `<td style="${td}">${u.name ? '<div style="font-weight:600;">' + escapeHtml(u.name) + '</div>' : ''}<div>${escapeHtml(u.email)}</div>${u.is_active === false ? '<div style="color:#B23A3A; font-size:11px;">Deactivated</div>' : ''}${u.credit_request_at ? '<div style="color:#B7791F; font-size:11px;">Credits requested ' + escapeHtml(new Date(u.credit_request_at).toLocaleDateString()) + (u.credit_request_note ? ' — ' + escapeHtml(u.credit_request_note) : '') + '</div>' : ''}${u.can_clear_data === false ? '<div style="color:var(--ink-soft); font-size:11px;">Data clearing off</div>' : ''}</td>` +
+        `<td style="${td}">${u.name ? '<div style="font-weight:600;">' + escapeHtml(u.name) + '</div>' : ''}<div>${escapeHtml(u.email)}</div><div style="color:var(--ink-soft); font-size:11px;">${u.key_type === 'platform_admin' ? 'Platform admin' : u.key_type === 'org_admin' ? 'Org admin (LMI staff)' : u.key_type === 'institutional_admin' ? 'Client admin' : 'User'}</div>${u.is_active === false ? '<div style="color:#B23A3A; font-size:11px;">Deactivated</div>' : ''}${u.credit_request_at ? '<div style="color:#B7791F; font-size:11px;">Credits requested ' + escapeHtml(new Date(u.credit_request_at).toLocaleDateString()) + (u.credit_request_note ? ' — ' + escapeHtml(u.credit_request_note) : '') + '</div>' : ''}${u.can_clear_data === false ? '<div style="color:var(--ink-soft); font-size:11px;">Data clearing off</div>' : ''}</td>` +
         `<td style="${td}">${escapeHtml(orgNameFor(u.organization_id))}</td>` +
         `<td style="${td}">${u.user_segment === 'non_lmi' ? 'B2B' : 'LMI'}</td>` +
         `<td style="${td}">${u.access_level === 'roleplay_only' ? 'Roleplay only' : 'Full'}</td>` +
@@ -5016,8 +5280,15 @@
     }
     $('adjustStatus').textContent = '';
     $('userManageBox').classList.toggle('hidden', u.key_type === 'platform_admin');
+    // Build 90: show Delete / Deactivate only where the server would allow it (never above your own tier).
+    const RANK = { member: 0, org_admin: 1, institutional_admin: 2, platform_admin: 3 };
+    const aboveMe = (RANK[u.key_type] || 0) > (RANK[state.userRole] || 0);
+    $('userDeleteBtn').classList.toggle('hidden', aboveMe);
+    $('userToggleActiveBtn').classList.toggle('hidden', aboveMe);
+    $('deleteConfirmEmail').classList.toggle('hidden', aboveMe);
     $('userToggleActiveBtn').textContent = u.is_active === false ? 'Reactivate' : 'Deactivate';
     $('deleteConfirmEmail').value = '';
+    $('winbackConsent').checked = false;
     $('userManageStatus').textContent = '';
     $('userManageStatus').className = 'status-msg';
     $('userAdjustPanel').classList.remove('hidden');
@@ -5143,7 +5414,7 @@
     }
     if (!window.confirm('Permanently delete ' + u.email + '? This cannot be undone.')) return;
     manageStatus('Working...', '');
-    const data = await api('admin-user-setup', { action: 'delete-user', user_id: u.id, confirm_email: typed });
+    const data = await api('admin-user-setup', { action: 'delete-user', user_id: u.id, confirm_email: typed, winback_consent: $('winbackConsent').checked });
     if (!data || !data.ok) {
       manageStatus(data ? data.message : 'Could not delete — try again.', 'error');
       return;
@@ -5152,6 +5423,37 @@
     $('userAdjustPanel').classList.add('hidden');
     await userSetupLoadUsers();
     userSetupLoadOrganizations();
+  });
+
+  // Build 90: editable credit rates + AI cost per report + win-back list (platform admin).
+  $('ratesToggleBtn').addEventListener('click', async () => {
+    const box = $('platformToolsBody'); box.classList.remove('hidden'); box.innerHTML = 'Loading...';
+    const d = await api('admin-user-setup', { action: 'get-credit-rates' });
+    if (!d || !d.ok) { box.innerHTML = '<div class="status-msg error">' + escapeHtml(d ? d.message : 'Could not load.') + '</div>'; return; }
+    const names = { research: 'Research (12 topics)', report: 'Presales report', meeting_analysis: 'Meeting analysis', guided_research: 'Guided research start', roleplay_turn: 'Roleplay, per message', roleplay_debrief: 'Roleplay debrief' };
+    box.innerHTML = '<div class="section-title" style="margin:0 0 8px;">Credit rates <span class="subtle" style="text-transform:none; letter-spacing:0; font-weight:400;">(1 credit = $0.10 of AI cost; takes effect within a minute)</span></div>' +
+      d.rates.map(r => '<div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;"><span style="width:210px;">' + escapeHtml(names[r.action_key] || r.action_key) + '</span><input type="text" data-rate-key="' + r.action_key + '" value="' + r.credits + '" style="width:80px; margin:0;"><button class="secondary small" data-rate-save="' + r.action_key + '" style="margin:0;">Save</button><span class="subtle" data-rate-msg="' + r.action_key + '">built-in: ' + r.default_credits + '</span></div>').join('') +
+      '<div style="margin-top:12px;"><button id="costsBtn" class="secondary small">Show real AI cost of the last 60 reports</button></div><div id="costsOut" style="margin-top:8px; overflow-x:auto;"></div>';
+    box.querySelectorAll('[data-rate-save]').forEach(b => b.addEventListener('click', async () => {
+      const k = b.getAttribute('data-rate-save'); const v = box.querySelector('[data-rate-key="' + k + '"]').value.trim(); const m = box.querySelector('[data-rate-msg="' + k + '"]');
+      const r = await api('admin-user-setup', { action: 'set-credit-rate', action_key: k, credits: Number(v) });
+      m.textContent = r && r.ok ? 'Saved: ' + r.credits : (r ? r.message : 'Could not save.');
+    }));
+    $('costsBtn').addEventListener('click', async () => {
+      $('costsOut').textContent = 'Loading...';
+      const c = await api('admin-user-setup', { action: 'report-costs' });
+      if (!c || !c.ok) { $('costsOut').textContent = c ? c.message : 'Could not load.'; return; }
+      $('costsOut').innerHTML = '<table style="font-size:12px; border-collapse:collapse;"><tr style="text-align:left;"><th style="padding:3px 8px;">Date</th><th style="padding:3px 8px;">Type</th><th style="padding:3px 8px;">Company</th><th style="padding:3px 8px;">AI calls</th><th style="padding:3px 8px;">Tokens</th><th style="padding:3px 8px;">Cost (US$)</th></tr>' +
+        c.rows.map(r => '<tr><td style="padding:3px 8px;">' + escapeHtml(String(r.created_at).slice(0, 10)) + '</td><td style="padding:3px 8px;">' + escapeHtml(r.type || '') + '</td><td style="padding:3px 8px;">' + escapeHtml(r.company || '') + '</td><td style="padding:3px 8px;">' + r.calls + '</td><td style="padding:3px 8px;">' + r.tokens.toLocaleString() + '</td><td style="padding:3px 8px;">' + r.cost_usd.toFixed(4) + '</td></tr>').join('') + '</table>';
+    });
+  });
+  $('winbackBtn').addEventListener('click', async () => {
+    const box = $('platformToolsBody'); box.classList.remove('hidden'); box.innerHTML = 'Loading...';
+    const d = await api('admin-user-setup', { action: 'list-winback' });
+    if (!d || !d.ok) { box.innerHTML = '<div class="status-msg error">' + escapeHtml(d ? d.message : 'Could not load.') + '</div>'; return; }
+    box.innerHTML = '<div class="section-title" style="margin:0 0 8px;">Win-back list (people who agreed to be contacted later)</div>' + (d.contacts.length
+      ? '<table style="font-size:12px; border-collapse:collapse;"><tr style="text-align:left;"><th style="padding:3px 8px;">Left</th><th style="padding:3px 8px;">Name</th><th style="padding:3px 8px;">Email</th><th style="padding:3px 8px;">Organization</th></tr>' + d.contacts.map(c => '<tr><td style="padding:3px 8px;">' + escapeHtml(String(c.left_at).slice(0, 10)) + '</td><td style="padding:3px 8px;">' + escapeHtml(c.full_name || '') + '</td><td style="padding:3px 8px;">' + escapeHtml(c.email) + '</td><td style="padding:3px 8px;">' + escapeHtml(c.organization_name || '') + '</td></tr>').join('') + '</table>'
+      : '<div class="subtle">Nobody on the list yet.</div>');
   });
 
   $('ledgerCheckBtn').addEventListener('click', async () => {
@@ -5196,6 +5498,30 @@
     $('userSetupResult').classList.remove('hidden');
   });
 
+  $('practiseMeetingBtn').addEventListener('click', () => { $('newRoleplayBtn').click(); });
+
+  async function rpFillLinkProspects() {
+    const sel = $('rp_linkProspect');
+    sel.value = ''; $('rpLinkProspectNote').textContent = '';
+    $('rpLinkProspectBox').classList.toggle('hidden', !!(state.access && state.access.roleplay_only));
+    if (sel.options.length > 1) return; // already filled this session
+    const d = await api('prospects', { action: 'list' });
+    if (d && d.ok && Array.isArray(d.prospects)) {
+      d.prospects.forEach(function (p) { const o = document.createElement('option'); o.value = p.id; o.textContent = (p.company_name || 'Prospect') + (p.prospect_name ? ' \u00B7 ' + p.prospect_name : ''); sel.appendChild(o); });
+    }
+  }
+  $('rp_linkProspect').addEventListener('change', function () {
+    $('rpLinkProspectNote').textContent = this.value ? 'The scenario description is not needed: the AI will use this prospect\u2019s own details and Presales report.' : '';
+  });
+
+  document.querySelectorAll('.copy-btn').forEach(function (b) {
+    b.addEventListener('click', async function () {
+      const box = $(b.getAttribute('data-copy-from')); const old = b.innerHTML;
+      try { await navigator.clipboard.writeText(box.value); } catch (e) { box.focus(); box.select(); document.execCommand('copy'); }
+      b.textContent = 'Copied \u2713'; setTimeout(function () { b.innerHTML = old; }, 1800);
+    });
+  });
+
   $('roleplayStandaloneLink').addEventListener('click', () => {
     rpResetSetupForm();
     state.rpMode = 'standalone';
@@ -5203,6 +5529,7 @@
     $('rpProspectCard').style.display = 'none';
     $('rpSetupSubline').textContent = 'Standalone practice — no prospect required.';
     rpAddPersona('', '', false);
+    rpFillLinkProspects();
     $('rpSetupBackLink').setAttribute('data-back-target', 'list');
     showView('roleplay-setup');
   });
@@ -5224,14 +5551,15 @@
       $('rp_setupStatus').className = 'status-msg error';
       return;
     }
-    if (state.rpMode === 'standalone' && !$('rp_scenarioDescription').value.trim()) {
+    state.rpLinkedProspectId = (state.rpMode === 'standalone' && $('rp_linkProspect').value) ? $('rp_linkProspect').value : null;
+    if (state.rpMode === 'standalone' && !state.rpLinkedProspectId && !$('rp_scenarioDescription').value.trim()) {
       $('rp_setupStatus').textContent = 'Describe the scenario first.';
       $('rp_setupStatus').className = 'status-msg error';
       return;
     }
 
     const scenario = {
-      mode: state.rpMode,
+      mode: state.rpLinkedProspectId ? 'prospect_tied' : state.rpMode,
       scenario_description: $('rp_scenarioDescription').value.trim(),
       difficulty: document.querySelector('input[name="rp_difficulty"]:checked').value,
       personas
@@ -5254,12 +5582,20 @@
   });
 
   async function rpActuallyStart(scenario, personas) {
+    // Build 90: which prospect is this practice for, and does it have a finished Presales report?
+    const tiedId = scenario.mode === 'prospect_tied' ? (state.rpLinkedProspectId || (state.currentProspect && state.currentProspect.id)) : null;
+    if (tiedId) {
+      let hasPlan;
+      if (!state.rpLinkedProspectId) hasPlan = state.currentReports.some(r => r.report_type === 'presales_prep' && r.status === 'complete');
+      else { const g = await api('prospects', { action: 'get', prospect_id: tiedId }); hasPlan = !!(g && g.ok && (g.reports || []).some(r => r.report_type === 'presales_prep' && r.status === 'complete')); }
+      if (!hasPlan && !confirm('This prospect has no completed Presales report yet, so the AI will have to make up the details of this person and company.\n\nPress OK to practise anyway, or Cancel to create the Presales report first.')) return;
+    }
     $('rp_startBtn').disabled = true;
     $('rp_setupStatus').textContent = 'Setting the scene...';
     $('rp_setupStatus').className = 'subtle';
 
     const data = await api('roleplay-start', {
-      prospect_id: state.rpMode === 'prospect_tied' ? state.currentProspect.id : null,
+      prospect_id: scenario.mode === 'prospect_tied' ? (state.rpLinkedProspectId || state.currentProspect.id) : null,
       scenario
     });
 
@@ -5275,6 +5611,8 @@
     state.rpScenario = scenario;
     $('rp_chatLog').innerHTML = '';
     rpAppendSystemNote(data.scene_ready_message);
+    if (data.presales_loaded) rpAppendSystemNote('Loaded: the Presales report for this prospect, dated ' + formatDateForFilename(data.presales_loaded.created_at) + '. The AI prospect will stay consistent with it.');
+    else if (scenario.mode === 'prospect_tied') rpAppendSystemNote('No Presales report was loaded: the AI is inventing this prospect\u2019s details.');
     $('rpChatSubline').textContent = personas.map(p => p.label).join(' & ');
 
     // Voice/avatar UI setup — reset to a clean state every time, since
