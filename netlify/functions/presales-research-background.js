@@ -1,4 +1,17 @@
 // PREPDO — presales-research-background.js
+// BUILD 91 | 2026-11-26: WEBSITE FIRST. Before the 12 topics run, the function now opens the company's own
+// website itself (home page plus up to 3 About / Contact / policy pages, which is where the registration
+// number (CIN) usually sits), reads the text, and writes a short verified company profile from it. That
+// profile is the identity anchor for every topic: a search result now counts as this company if it matches
+// the legal name, CIN, brand, place or domain read from the site. Each topic gets 2 searches (was 1), and is
+// given the CIN found on the site or typed in Notes, plus the typed Notes. If the site cannot be read, the
+// facts say so plainly instead of silently returning "could not verify" for everything.
+// BUILD 91b | 2026-11-27: NOT-ENOUGH-DATA RULE. Each topic is classified: confirmed / nothing found / could not
+// verify. The research counts as sufficient only if the company website was actually read OR at least 4 topics are
+// confirmed. Otherwise NO report is produced: the run is closed with error_message INSUFFICIENT_DATA, the research
+// credits are returned (first 2 such outcomes per prospect per 24 h), and the screen asks the user to re-check the
+// website, paste text from it, or write their own facts. Never lists look-alike companies. The website is tried with
+// an automatic second attempt (with/without www, https/http). A pasted site text (site_text) counts as the website.
 // BUILD 90 | 2026-11-22: writes progress_done / progress_total (migration_v29.sql) as each topic finishes.
 // BUILD 2 | 2026-09-11
 // Real gap fixed, per direct feedback: a genuinely failed topic
@@ -51,6 +64,7 @@
 // actually being retried.
 
 const { getMemberFromSession, callClaude, extractText, logApiUsage, supaGet, supaPatch, respond, handleOptions } = require('./_lib.js');
+const { refund, PRICES } = require('./_access.js');
 
 const TOPICS_BATCH_1 = [
   {
@@ -138,7 +152,212 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function researchTopicWithRetry(topic, company_name, websites, prospect_name, position, maxRetries = 2) {
+
+// ---------- BUILD 91b: classify what a topic actually returned ----------
+const UNVERIFIED_RE = /could not verify information about the specific company/i;
+const NOTHING_RE = /nothing specific found on this topic/i;
+function cleanTopicText(t) {
+  // Drop the model's narration lines ("I'll search for ...") that sit before the facts.
+  return String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln)).join('\n').trim();
+}
+// 'confirmed' | 'nothing' | 'unverified' | 'failed'
+function classifyTopic(sec) {
+  if (!sec || !sec.ok) return 'failed';
+  const t = String(sec.text || '');
+  if (UNVERIFIED_RE.test(t)) return 'unverified';
+  if (NOTHING_RE.test(t) && t.replace(/\s+/g, ' ').length < 160) return 'nothing';
+  if (t.replace(/\s+/g, ' ').trim().length < 25) return 'nothing';
+  return 'confirmed';
+}
+
+// ---------- BUILD 91: read the company's own website ----------
+const CIN_RE = /\b[LU]\d{5}[A-Z]{2}\d{4}[A-Z]{3}\d{6}\b/g;
+const GSTIN_RE = /\b\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]\b/g;
+
+// Only plain public http(s) sites; never localhost, private or internal addresses.
+function isSafeSiteUrl(u) {
+  try {
+    const url = new URL(u);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    const h = url.hostname.toLowerCase();
+    if (!h.includes('.') || h === 'localhost' || h.endsWith('.local') || h.endsWith('.internal')) return false;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
+    if (h.includes(':') || h.startsWith('[')) return false;
+    return true;
+  } catch (e) { return false; }
+}
+
+function normaliseSiteUrl(w) {
+  let u = String(w || '').trim();
+  if (!u) return null;
+  if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+  return isSafeSiteUrl(u) ? u : null;
+}
+
+async function fetchPageHtml(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; PREPDO-research/1.0; +https://prepdo.netlify.app)',
+        'Accept': 'text/html,application/xhtml+xml'
+      }
+    });
+    if (!res.ok) return { ok: false, error: 'HTTP ' + res.status };
+    const ct = String(res.headers.get('content-type') || '');
+    if (ct && !/html|text/i.test(ct)) return { ok: false, error: 'not a web page (' + ct.slice(0, 40) + ')' };
+    const raw = await res.text();
+    // The final address after redirects, and a safety re-check on it.
+    const finalUrl = res.url || url;
+    if (!isSafeSiteUrl(finalUrl)) return { ok: false, error: 'redirected to a non-public address' };
+    return { ok: true, html: raw.slice(0, 700000), url: finalUrl };
+  } catch (err) {
+    return { ok: false, error: err.name === 'AbortError' ? 'timed out' : String(err.message || err).slice(0, 80) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function decodeEntities(t) {
+  return t
+    .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'").replace(/&copy;/gi, '©')
+    .replace(/&#(\d+);/g, (m, n) => { try { return String.fromCodePoint(Number(n)); } catch (e) { return ' '; } });
+}
+
+function htmlToText(html) {
+  let h = String(html || '');
+  const title = (h.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '';
+  const desc = (h.match(/<meta[^>]+name=["']description["'][^>]+content=["']([^"']*)["']/i) || [])[1] || '';
+  h = h.replace(/<!--[\s\S]*?-->/g, ' ')
+       .replace(/<(script|style|noscript|svg|template)[\s\S]*?<\/\1>/gi, ' ')
+       .replace(/<\/(p|div|li|tr|h[1-6]|section|footer|header|br)>/gi, '\n')
+       .replace(/<br\s*\/?>/gi, '\n')
+       .replace(/<[^>]+>/g, ' ');
+  h = decodeEntities(h).replace(/[ \t\r\f\v]+/g, ' ').replace(/\n\s*\n+/g, '\n').trim();
+  const head = [title && 'Page title: ' + decodeEntities(title).trim(), desc && 'Description: ' + decodeEntities(desc).trim()].filter(Boolean).join('\n');
+  return (head ? head + '\n' : '') + h;
+}
+
+function pickSubpages(html, baseUrl, max = 3) {
+  let base;
+  try { base = new URL(baseUrl); } catch (e) { return []; }
+  const found = [];
+  const seen = new Set([base.href.replace(/#.*$/, '')]);
+  const re = /<a\b[^>]*href=["']([^"'#][^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html)) && found.length < 40) {
+    const label = decodeEntities(m[2].replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 60);
+    let u;
+    try { u = new URL(m[1], base); } catch (e) { continue; }
+    if (u.hostname.replace(/^www\./, '') !== base.hostname.replace(/^www\./, '')) continue;
+    if (!/^https?:$/.test(u.protocol)) continue;
+    if (/\.(jpg|jpeg|png|gif|webp|svg|pdf|zip|css|js)(\?|$)/i.test(u.pathname)) continue;
+    const key = u.href.replace(/#.*$/, '');
+    if (seen.has(key)) continue;
+    const hay = (u.pathname + ' ' + label).toLowerCase();
+    // About / contact / who we are / team, and the policy pages where registration numbers often sit.
+    const score = /about|story|who-we|our-company|company|team|leadership|director|contact|reach/.test(hay) ? 2
+                : /privacy|terms|policy|legal|disclaimer|shipping|refund/.test(hay) ? 1 : 0;
+    if (!score) continue;
+    seen.add(key);
+    found.push({ href: key, score });
+  }
+  found.sort((a, b) => b.score - a.score);
+  return found.slice(0, max).map((f) => f.href);
+}
+
+// The address as given, then (automatic second try) with/without www and the other scheme.
+function urlVariants(url) {
+  const out = [url];
+  try {
+    const u = new URL(url);
+    const bare = u.hostname.replace(/^www\./i, '');
+    const alt = u.hostname.toLowerCase().startsWith('www.') ? bare : 'www.' + bare;
+    const mk = (scheme, host) => scheme + '//' + host + (u.pathname === '/' ? '/' : u.pathname) + u.search;
+    [mk(u.protocol, alt), mk(u.protocol === 'https:' ? 'http:' : 'https:', u.hostname), mk('http:', alt)].forEach((v) => { if (!out.includes(v)) out.push(v); });
+  } catch (e) { /* keep the original only */ }
+  return out;
+}
+
+// Reads one website: home page plus a few likely pages. Never throws.
+async function readOneWebsite(rawUrl) {
+  const url = normaliseSiteUrl(rawUrl);
+  if (!url) return { url: rawUrl, ok: false, error: 'not a usable public web address' };
+  let home = null; const errors = [];
+  for (const v of urlVariants(url)) {
+    if (!isSafeSiteUrl(v)) continue;
+    const r = await fetchPageHtml(v, v === url ? 12000 : 8000);
+    if (r.ok) { home = r; break; }
+    errors.push(r.error);
+  }
+  if (!home) return { url, ok: false, error: errors[0] || 'could not be opened' };
+  const subs = pickSubpages(home.html, home.url, 3);
+  const subPages = await Promise.all(subs.map(async (u) => {
+    const r = await fetchPageHtml(u, 9000);
+    return r.ok ? { url: u, text: htmlToText(r.html) } : null;
+  }));
+  const pages = [{ url: home.url, text: htmlToText(home.html) }, ...subPages.filter(Boolean)];
+  const combined = pages.map((p) => '--- PAGE: ' + p.url + ' ---\n' + p.text.slice(0, 8000)).join('\n\n').slice(0, 24000);
+  const plain = pages.map((p) => p.text).join('\n');
+  const cins = [...new Set(plain.toUpperCase().match(CIN_RE) || [])];
+  const gsts = [...new Set(plain.toUpperCase().match(GSTIN_RE) || [])];
+  const readable = plain.replace(/\s+/g, ' ').length;
+  return { url, ok: true, pages: pages.map((p) => p.url), text: combined, cins, gsts, readable };
+}
+
+// Everything BUILD 91 adds in one call. Returns { siteInfo, usage, model } where siteInfo may be null.
+async function buildSiteProfile(websites, company_name, extraText, pastedText) {
+  const pasted = String(pastedText || '').trim().slice(0, 20000);
+  const typedCins = [...new Set((String(extraText || '') + ' ' + pasted).toUpperCase().match(CIN_RE) || [])];
+  if (!websites.length && pasted.length < 200) return { siteInfo: null, note: 'No website was given.', typedCins };
+  const reads = await Promise.all(websites.slice(0, 3).map((w) => readOneWebsite(w)));
+  const good = reads.filter((r) => r.ok && r.readable > 200);
+  if (pasted.length >= 200) {
+    // Text the salesperson copied from the website themselves: counts as the website having been read.
+    good.push({ url: '(text pasted by the salesperson)', ok: true, pages: ['(text pasted by the salesperson)'], text: '--- PASTED FROM THE WEBSITE ---\n' + pasted, cins: [...new Set(pasted.toUpperCase().match(CIN_RE) || [])], gsts: [...new Set(pasted.toUpperCase().match(GSTIN_RE) || [])], readable: pasted.length });
+  }
+  if (!good.length) {
+    const why = reads.map((r) => `${r.url}: ${r.ok ? 'opened, but almost no readable text (the page may build itself with scripts)' : r.error}`).join('; ');
+    return { siteInfo: null, note: 'The website could not be read (' + why + ').', typedCins };
+  }
+  const cins = [...new Set([...good.flatMap((r) => r.cins), ...typedCins])];
+  const sourceText = good.map((r) => r.text).join('\n\n').slice(0, 30000);
+  let profile = '';
+  let usage = null; let model = null;
+  try {
+    const res = await callClaude({
+      model: 'claude-haiku-4-5-20251001',
+      system: `You read the text of a company's own website pages and write a SHORT factual profile of that company, for a salesperson preparing to meet them. Use ONLY what the pages actually say. Never add anything from memory or guess. If something is not on the pages, write "not stated".
+
+Return markdown with exactly these lines:
+- **Legal / registered name:** ...
+- **Brand / trading name:** ...
+- **Registration numbers shown (CIN, GSTIN, etc.):** ...
+- **Location / address:** ...
+- **What they do / sell:** ... (1-2 sentences)
+- **People named, with roles:** ...
+- **Certifications, awards, customers or partners named:** ...
+- **Contact details shown:** ...
+- **Anything else notable on the site:** ... (1 short line)`,
+      messages: [{ role: 'user', content: `Company name given by the salesperson: ${company_name}\n\nWebsite text:\n${sourceText}` }],
+      max_tokens: 700
+    });
+    profile = extractText(res) || '';
+    usage = res.usage; model = res.model;
+  } catch (err) {
+    return { siteInfo: null, note: 'The website was opened but its profile could not be written (' + String(err.message || err).slice(0, 80) + ').', typedCins };
+  }
+  return {
+    siteInfo: { profile: profile.trim(), cins, gsts: [...new Set(good.flatMap((r) => r.gsts))], pages: good.flatMap((r) => r.pages) },
+    usage, model, typedCins
+  };
+}
+
+async function researchTopicWithRetry(topic, company_name, websites, prospect_name, position, maxRetries = 2, siteInfo = null, extraContext = '') {
   const websiteBlock = websites.length > 0
     ? websites.map((w, i) => `Website ${i + 1}: ${w}`).join('\n')
     : 'Website: (not provided)';
@@ -147,7 +366,17 @@ async function researchTopicWithRetry(topic, company_name, websites, prospect_na
     ? `\nMeeting contact: ${prospect_name}${position ? `, ${position}` : ''}`
     : '';
 
-  const searchBudget = Math.min(Math.max(websites.length, 1), 3);
+  // BUILD 91: 2 searches per topic (was 1 in total), so one unlucky search no longer ends a topic.
+  const searchBudget = Math.min(Math.max(websites.length, 1) + 1, 4);
+
+  // BUILD 91: what was read directly from the company's own website, and anything the salesperson typed.
+  const siteBlock = siteInfo && siteInfo.profile
+    ? `\n\nVERIFIED FROM THE COMPANY'S OWN WEBSITE (read directly, not searched):\n${siteInfo.profile.slice(0, 3500)}${siteInfo.cins && siteInfo.cins.length ? `\nRegistration number (CIN) found: ${siteInfo.cins.join(', ')}` : ''}`
+    : '';
+  const typedBlock = extraContext ? `\n\nExtra context typed by the salesperson (use it to identify the company):\n${String(extraContext).slice(0, 700)}` : '';
+  const identityRule = siteInfo && siteInfo.profile
+    ? `The block "VERIFIED FROM THE COMPANY'S OWN WEBSITE" below is the identity anchor. A search result counts as THIS company if it matches the legal name, brand name, registration number (CIN), address or website domain shown there. Use those exact identifiers in your searches (for example the legal name together with the CIN or the town, or the brand name together with the domain), not just the short company name. If the website profile itself answers this topic, you may report it, marked (from the company's own website).`
+    : `Only report information you can confirm is actually about THIS SPECIFIC company (matching the name and/or website given below).`;
 
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -156,17 +385,17 @@ async function researchTopicWithRetry(topic, company_name, websites, prospect_na
         model: 'claude-haiku-4-5-20251001',
         system: `You are doing one small, focused piece of research on a company, as part of a larger presales prep. Your job: use web search to find information specifically about ${topic.focus}.
 
-${websites.length > 1 ? `IMPORTANT — multiple websites were given for this company (likely a group of related/sister companies). Search using EACH website listed below individually — do not rely on a single search to cover all of them. Combine what you find across all sites into one answer.\n\n` : ''}CRITICAL — verify identity before reporting anything: only report information you can confirm is actually about THIS SPECIFIC company (matching the name and/or website given below), not a different company that merely has a similar or related-sounding name. If a search doesn't turn up a confident match for the specific company/website given, say plainly "Could not verify information about the specific company/website given" — do NOT substitute or present information about a different company as if it were about this one, even if it seems like a plausible or likely match. A wrong company match is worse than no information at all, and has caused a real, confirmed error before.
+${websites.length > 1 ? `IMPORTANT — multiple websites were given for this company (likely a group of related/sister companies). Search using EACH website listed below individually — do not rely on a single search to cover all of them. Combine what you find across all sites into one answer.\n\n` : ''}CRITICAL — verify identity before reporting anything: ${identityRule} Do not report a different company that merely has a similar or related-sounding name. If a search doesn't turn up a confident match for the specific company/website given, reply with ONLY this sentence: "Could not verify information about the specific company/website given." — never name, list or describe other companies, similar names, or what the searches returned instead, and never add suggestions of where to look. Do NOT substitute or present information about a different company as if it were about this one, even if it seems like a plausible or likely match. A wrong company match is worse than no information at all, and has caused a real, confirmed error before.
 
-Return 2-4 short bulleted markdown facts, only about this specific topic. If search turns up nothing relevant to this specific topic (for a confirmed match on the right company), say plainly "Nothing specific found on this topic" — do not pad with generic statements or drift into other topics. Keep it brief — this is one piece of a larger picture, not the whole report.`,
+Return 2-4 short bulleted markdown facts, only about this specific topic. If search turns up nothing relevant to this specific topic (for a confirmed match on the right company), reply with ONLY "Nothing specific found on this topic." — do not pad with generic statements or drift into other topics. Keep it brief — this is one piece of a larger picture, not the whole report.`,
         messages: [{
           role: 'user',
-          content: `Company: ${company_name}\n${websiteBlock}${contactBlock}\n\nFind information specifically about: ${topic.focus}`
+          content: `Company: ${company_name}\n${websiteBlock}${contactBlock}${siteBlock}${typedBlock}\n\nFind information specifically about: ${topic.focus}`
         }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: searchBudget }],
         max_tokens: 700
       });
-      const text = extractText(claudeRes);
+      const text = cleanTopicText(extractText(claudeRes));
       return { key: topic.key, label: topic.label, ok: true, text: text || 'Nothing specific found on this topic.', model: claudeRes.model, usage: claudeRes.usage };
     } catch (err) {
       lastErr = err;
@@ -184,13 +413,26 @@ Return 2-4 short bulleted markdown facts, only about this specific topic. If sea
   return { key: topic.key, label: topic.label, ok: false, error: lastErr?.message || 'Unknown error' };
 }
 
-function compileFacts(sections, linkedin_paste) {
+function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '') {
   const succeeded = sections.filter((s) => s.ok);
   const failed = sections.filter((s) => !s.ok);
 
-  let confirmed_facts = succeeded
+  // BUILD 91b: only topics with real findings become sections; the rest are one short line.
+  const confirmedSecs = succeeded.filter((s) => classifyTopic(s) === 'confirmed');
+  const notFound = succeeded.filter((s) => classifyTopic(s) !== 'confirmed');
+  let confirmed_facts = confirmedSecs
     .map((s) => `### ${s.label}\n${s.text}`)
     .join('\n\n');
+  if (notFound.length > 0) {
+    confirmed_facts += (confirmed_facts ? '\n\n' : '') + `### Not found on public sources\n*No confirmed public information was found on: ${notFound.map((s) => s.label).join('; ')}.*`;
+  }
+
+  // BUILD 91: the company's own website, read directly, comes first.
+  if (siteInfo && siteInfo.profile) {
+    confirmed_facts = `### From the company's own website (read directly)\n${siteInfo.profile}\n*Pages read: ${siteInfo.pages.slice(0, 4).join(', ')}*\n\n` + confirmed_facts;
+  } else if (siteNote) {
+    confirmed_facts = `### Company website\n*${siteNote} Add what you know about the company to this box.*\n\n` + confirmed_facts;
+  }
 
   if (linkedin_paste && linkedin_paste.trim()) {
     confirmed_facts += `\n\n### Contact's LinkedIn Profile (pasted by the salesperson)\n${linkedin_paste.trim()}`;
@@ -211,7 +453,7 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: 'Invalid request.' };
   }
 
-  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token } = payload;
+  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token, notes_text, site_text } = payload;
 
   if (!report_id || !company_name) {
     return { statusCode: 400, body: 'report_id and company_name are required.' };
@@ -226,6 +468,25 @@ exports.handler = async function (event) {
 
     const websites = parseWebsites(company_website);
 
+    // BUILD 91: website first. Never allowed to stop the research: any problem is noted and the topics run anyway.
+    let siteInfo = null; let siteNote = ''; let siteUsage = null; let siteModel = null;
+    const extraContext = [notes_text, company_name].filter(Boolean).join(' | ');
+    try {
+      const built = await buildSiteProfile(websites, company_name, [notes_text, company_name, company_website].filter(Boolean).join(' '), site_text);
+      siteInfo = built.siteInfo; siteNote = built.note || ''; siteUsage = built.usage; siteModel = built.model;
+      if (siteInfo && built.typedCins && built.typedCins.length) {
+        siteInfo.cins = [...new Set([...(siteInfo.cins || []), ...built.typedCins])];
+      } else if (!siteInfo && built.typedCins && built.typedCins.length) {
+        siteInfo = { profile: 'Registration number (CIN) typed by the salesperson: ' + built.typedCins.join(', '), cins: built.typedCins, gsts: [], pages: [] };
+      }
+    } catch (e) {
+      siteNote = 'The website step failed (' + String(e.message || e).slice(0, 80) + ').';
+    }
+    if (siteUsage) {
+      try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-research-background', action: 'site_profile', model: siteModel, claudeResponse: { usage: siteUsage } }); } catch (e) { /* cosmetic */ }
+    }
+    const typedNotes = notes_text ? String(notes_text) : '';
+
     // Batch 1 first, fully, before batch 2 starts — this is what the
     // frontend's "digging deeper" transition is actually watching for
     // (batch 1's results landing in structured_data).
@@ -234,7 +495,7 @@ exports.handler = async function (event) {
     let doneCount = 0;
     const totalTopics = TOPICS_BATCH_1.length + TOPICS_BATCH_2.length;
     const runTopic = async (topic) => {
-      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position);
+      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes);
       doneCount += 1;
       const mine = doneCount;
       try { await supaPatch(`reports?id=eq.${report_id}`, { progress_done: mine, progress_total: totalTopics }); } catch (e) { /* progress is cosmetic */ }
@@ -281,7 +542,7 @@ exports.handler = async function (event) {
     if (stillFailed.length > 0) {
       const topicsToRetry = ALL_TOPICS.filter((t) => stillFailed.some((f) => f.key === t.key));
       const retryResults = await Promise.allSettled(
-        topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position))
+        topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes))
       );
       const retriedSections = retryResults.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
@@ -305,12 +566,36 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (failed - all topics)' };
     }
 
-    const confirmed_facts = compileFacts(finalSections, linkedin_paste);
+    // BUILD 91b: is there enough to build a report on? The website was read (or pasted), or 4+ topics confirmed.
+    const confirmedCount = finalSections.filter((s) => classifyTopic(s) === 'confirmed').length;
+    const siteWasRead = !!(siteInfo && siteInfo.pages && siteInfo.pages.length > 0);
+    if (!siteWasRead && confirmedCount < 4) {
+      let refunded = false;
+      try {
+        const own = await supaGet(`reports?id=eq.${report_id}&select=prospect_id`);
+        const pid = own.length ? own[0].prospect_id : null;
+        let earlier = 0;
+        if (pid) {
+          const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+          const prior = await supaGet(`reports?prospect_id=eq.${pid}&report_type=eq.presales_research&error_message=eq.INSUFFICIENT_DATA&created_at=gte.${encodeURIComponent(since)}&select=id`);
+          earlier = prior.filter((r) => r.id !== report_id).length;
+        }
+        if (earlier < 2) { await refund(member, PRICES.research, { reportId: report_id, note: 'research: not enough public data' }); refunded = true; }
+      } catch (e) { /* the refund is best effort; the outcome below stands either way */ }
+      await supaPatch(`reports?id=eq.${report_id}`, {
+        status: 'failed',
+        error_message: 'INSUFFICIENT_DATA',
+        structured_data: { research_topics: finalSections, batches_complete: 2, insufficient: true, confirmed_count: confirmedCount, site_note: siteNote || null, refunded }
+      });
+      return { statusCode: 200, body: 'done (not enough public data)' };
+    }
+
+    const confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote);
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       status: 'complete',
       confirmed_facts,
-      structured_data: { research_topics: finalSections, batches_complete: 2 }
+      structured_data: { research_topics: finalSections, batches_complete: 2, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null }
     });
 
     return { statusCode: 200, body: 'done' };
@@ -330,3 +615,5 @@ exports.handler = async function (event) {
 exports.ALL_TOPICS = ALL_TOPICS;
 exports.researchTopicWithRetry = researchTopicWithRetry;
 exports.compileFacts = compileFacts;
+exports.buildSiteProfile = buildSiteProfile;
+exports.classifyTopic = classifyTopic;
