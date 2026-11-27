@@ -1,4 +1,6 @@
 // PREPDO — presales-research.js
+// BUILD 11 | 2026-11-27: the retry now gives the re-run topics the same website profile and typed notes the main
+// research used (saved in structured_data.site_profile), and compiles the facts with the Build 91b rules.
 // BUILD 10 | 2026-09-11
 // Repurposed from the old synchronous 12-topic research function
 // (Build 9) into a small, synchronous 'retry-topics' endpoint — the
@@ -71,10 +73,20 @@ exports.handler = async function (event) {
     }
 
     const websites = parseWebsites(company_website);
+    // BUILD 11: the website profile saved by the main research, and the prospect's typed notes.
+    const siteInfo = report.structured_data && report.structured_data.site_profile ? report.structured_data.site_profile : null;
+    const siteNote = (report.structured_data && report.structured_data.site_note) || '';
+    let typedNotes = '';
+    try {
+      if (report.prospect_id) {
+        const pr = await supaGet(`prospects?id=eq.${report.prospect_id}&select=notes,meeting_objective`);
+        if (pr.length) typedNotes = [pr[0].notes, pr[0].meeting_objective].filter(Boolean).join(' | ').slice(0, 800);
+      }
+    } catch (e) { /* optional */ }
     const topicsToRetry = ALL_TOPICS.filter((t) => failedTopics.some((f) => f.key === t.key));
 
     const retriedResults = await Promise.allSettled(
-      topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position))
+      topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes))
     );
     const retriedSections = retriedResults.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
@@ -90,7 +102,7 @@ exports.handler = async function (event) {
     const retriedByKey = Object.fromEntries(retriedSections.map((r) => [r.key, r]));
     const mergedTopics = existingTopics.map((t) => retriedByKey[t.key] || t);
 
-    const confirmed_facts = compileFacts(mergedTopics, linkedin_paste);
+    const confirmed_facts = compileFacts(mergedTopics, linkedin_paste, siteInfo, siteNote);
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       confirmed_facts,
