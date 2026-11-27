@@ -1,4 +1,8 @@
 // PREPDO — presales-research-start.js
+// BUILD 91b | 2026-11-27: also accepts site_text (text the salesperson pasted from the company's website, for the
+// second try after 'not enough public data') and passes it on. Nothing else changes.
+// BUILD 91 | 2026-11-26: also passes the prospect's Notes and Meeting objective (notes_text) to the research, so a
+// company number typed there reaches it. Nothing else changes.
 // BUILD 90 | 2026-11-22: no double charge if research for the same prospect is already running
 // (last 15 minutes); the running report is returned. Credit check uses the live (editable) rates.
 // BUILD 6 | 2026-10-11 (ships in the Build 89 package)
@@ -56,6 +60,7 @@ exports.handler = async function (event) {
   }
 
   const { session_token, company_name, company_website, linkedin_paste, prospect_name, position, prospect_id } = payload;
+  const site_text = typeof payload.site_text === 'string' ? payload.site_text.slice(0, 20000) : null;
 
   let member = null;
   let charged = false;
@@ -74,6 +79,7 @@ exports.handler = async function (event) {
     if (denied) return respond(denied.status, denied.body);
 
     let wildcard_query = null;
+    let notes_text = null;
     let orgFromProspect = null;
     if (prospect_id) {
       const prospectRows = await supaGet(`prospects?id=eq.${prospect_id}&select=*`);
@@ -84,6 +90,7 @@ exports.handler = async function (event) {
         return respond(403, { ok: false, message: 'Not authorized.' });
       }
       wildcard_query = prospectRows[0].wildcard_query || null;
+      notes_text = [prospectRows[0].notes, prospectRows[0].meeting_objective].filter(Boolean).join(' | ').slice(0, 800) || null;
       orgFromProspect = prospectRows[0].organization_id || null;
     }
 
@@ -124,6 +131,8 @@ exports.handler = async function (event) {
           prospect_name,
           position,
           wildcard_query,
+          notes_text,
+          site_text,
           session_token
         })
       });
