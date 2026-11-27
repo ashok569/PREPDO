@@ -1,6 +1,11 @@
 <!DOCTYPE html>
 <!--
   PREPDO — app.html
+  BUILD 91b | 2026-11-27 (on top of 90.1)
+  Presales research: when too little public data is found (website unreadable AND fewer than 4 topics confirmed)
+  the run is closed with the message NOT ENOUGH PUBLIC DATA AVAILABLE, SO A REPORT CANNOT BE GENERATED, with
+  suggestions, a second try (website address and/or text pasted from the website) and an option to write your own
+  facts (at least 40 words) and build the plan from those.
   BUILD 90.1 | 2026-11-22
   PDF built from text (jsPDF, jspdf.umd.min.js beside this file) with one Download menu; AI notice in the
   footer and in Word/PDF footers; Presales research: progress "N of 12" with bar, Retry, Use saved
@@ -1646,6 +1651,28 @@
       </div>
     </div>
 
+    <div id="researchInsufficientBox" class="hidden card" style="border-left:3px solid #B3261E;">
+      <div style="font-weight:700;font-size:1.05em;color:#B3261E;margin-bottom:8px;">NOT ENOUGH PUBLIC DATA AVAILABLE, SO A REPORT CANNOT BE GENERATED</div>
+      <div id="insuffReason" style="margin-bottom:10px;"></div>
+      <div style="font-weight:600;margin-bottom:4px;">What you can do</div>
+      <ul style="margin:0 0 12px 18px;padding:0;line-height:1.5;">
+        <li>Check the website address below, correct it if needed and try again.</li>
+        <li>Open the company's website yourself, copy the text of its About or Contact page (Ctrl+A, then Ctrl+C) and paste it below.</li>
+        <li>Put the company's legal name and company number (CIN) in the prospect's Notes, or paste the contact's LinkedIn profile into the prospect.</li>
+        <li>Add a second website, such as the company's LinkedIn page.</li>
+        <li>Or write what you already know about the company yourself (button below).</li>
+      </ul>
+      <label for="insuffWebsite">Company website</label>
+      <input type="text" id="insuffWebsite" style="width:100%;margin-bottom:10px;">
+      <label for="insuffPasted">Text copied from the website (optional)</label>
+      <textarea id="insuffPasted" style="min-height:90px;width:100%;" placeholder="Paste the text of the About or Contact page here"></textarea>
+      <div style="margin-top:12px;">
+        <button id="insuffTryAgainBtn">Try again</button>
+        <button id="insuffOwnFactsBtn" class="secondary" style="margin-left:8px;">I will write my own facts</button>
+        <button id="insuffCloseBtn" class="secondary" style="margin-left:8px;">Close</button>
+      </div>
+      <div class="subtle" id="insuffNote" style="margin-top:8px;"></div>
+    </div>
     <div id="researchRetryBox" class="hidden card" style="border-left:3px solid #C87A3E;">
       <div id="researchRetryMsg" style="margin-bottom:12px;"></div>
       <button id="researchRetryBtn">Retry</button>
@@ -3670,7 +3697,9 @@
     if (dr && !$('confirmedFactsBox').value.trim()) { drBtn.classList.remove('hidden'); drBtn.onclick = function () { $('confirmedFactsBox').value = dr; drBtn.classList.add('hidden'); }; } else drBtn.classList.add('hidden');
   }
 
-  async function runFreshResearch() {
+  async function runFreshResearch(opts) {
+    opts = (opts && typeof opts === 'object' && !opts.target) ? opts : {};
+    $('researchInsufficientBox').classList.add('hidden');
     $('researchChoice').classList.add('hidden');
     $('researchLoading').classList.remove('hidden');
     $('researchResult').classList.add('hidden');
@@ -3681,7 +3710,8 @@
     // Server refuses to charge twice if this prospect's research is already running.
     const startData = await api('presales-research-start', {
       company_name: p.company_name,
-      company_website: p.company_website,
+      company_website: opts.website != null ? opts.website : p.company_website,
+      site_text: opts.siteText || null,
       linkedin_paste: p.linkedin_paste,
       prospect_name: p.prospect_name,
       position: p.position,
@@ -3693,6 +3723,46 @@
       return;
     }
     watchResearch(startData.report_id);
+  }
+
+  // BUILD 91b: research found too little public data - no report is built. The user can re-check the website,
+  // paste text from it, or write their own facts.
+  const OWN_FACTS_MARK = '(No public data was found. The facts below were written by the salesperson.)';
+  function showInsufficientData(report) {
+    const sd = report.structured_data || {};
+    $('researchLoading').classList.add('hidden');
+    $('researchResult').classList.add('hidden');
+    $('researchRetryBox').classList.add('hidden');
+    const box = $('researchInsufficientBox');
+    box.classList.remove('hidden');
+    const p = state.currentProspect || {};
+    const site = sd.site_note ? ' ' + sd.site_note : '';
+    $('insuffReason').textContent = 'PREPDO could not read the company\u2019s website and found no meaningful public information that it could confirm is about this company.' + site + ' ' +
+      (sd.refunded ? 'The credits for this research have been returned to you.' : 'No further credits will be returned for repeated attempts on this prospect today.');
+    $('insuffWebsite').value = p.company_website || '';
+    $('insuffPasted').value = '';
+    $('insuffNote').textContent = '';
+    $('insuffTryAgainBtn').onclick = function () {
+      const website = $('insuffWebsite').value.trim();
+      const siteText = $('insuffPasted').value.trim();
+      if (!website && siteText.length < 200) { $('insuffNote').textContent = 'Enter the website address, or paste at least a few lines of text from the website.'; return; }
+      box.classList.add('hidden');
+      runFreshResearch({ website: website, siteText: siteText });
+    };
+    $('insuffOwnFactsBtn').onclick = function () {
+      box.classList.add('hidden');
+      $('researchResult').classList.remove('hidden');
+      $('confirmedFactsBox').value = OWN_FACTS_MARK + '\n\n';
+      state.currentResearchReportId = null;
+      $('retryFailedTopicsBtn').classList.add('hidden');
+      $('researchStatus').textContent = 'Write what you know about this company, its people and why you are meeting (at least 40 words), then press Generate Full Report.';
+      $('researchStatus').className = 'subtle';
+      $('confirmedFactsBox').focus();
+    };
+    $('insuffCloseBtn').onclick = function () {
+      box.classList.add('hidden');
+      resetResearchChoiceView();
+    };
   }
 
   async function watchResearch(reportId) {
@@ -3728,6 +3798,10 @@
       const batchesComplete = report.structured_data?.batches_complete || 0;
 
       if (report.status === 'complete' || report.status === 'failed') {
+        if (report.status === 'failed' && report.error_message === 'INSUFFICIENT_DATA') {
+          showInsufficientData(report);
+          return;
+        }
         if (report.status === 'failed') {
           showResearchRetry('Research failed: ' + (report.error_message || 'Unknown error') + '. Any credits taken for a failed start were returned.', null);
           return;
@@ -4080,6 +4154,16 @@
       $('researchStatus').textContent = 'Confirmed Facts cannot be empty — add at least a line or two.';
       $('researchStatus').className = 'status-msg error';
       return;
+    }
+    // BUILD 91b: a plan built only from the salesperson's own notes needs enough to be useful.
+    if (facts.indexOf(OWN_FACTS_MARK) === 0) {
+      const own = facts.slice(OWN_FACTS_MARK.length).trim();
+      const words = own ? own.split(/\s+/).length : 0;
+      if (words < 40) {
+        $('researchStatus').textContent = 'Please write at least 40 words about the company (you have ' + words + ').';
+        $('researchStatus').className = 'status-msg error';
+        return;
+      }
     }
     showView('report');
     $('reportLoading').classList.remove('hidden');
