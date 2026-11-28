@@ -1,4 +1,8 @@
 // PREPDO — presales-generate-background.js
+// BUILD 45 | 2026-11-28 (ships in the Build 92 package; this file's own numbering continues from Build 44 below): (1) the 'specific question' box on a RE-RUN now works: it was passed here but never read. The
+// question is researched first (same step as at setup, from presales-research-background.js) and added to the facts as
+// "Your specific question: ...". (2) The plan's Confirmed Facts section now keeps a "Your specific question" section and a
+// "CAUTION - COMPANY FILINGS" section as their own headed paragraphs. Nothing else changes.
 // BUILD 44 | 2026-09-30
 // Real limitation found and fixed: the append-vs-overwrite behavior below was
 // gated entirely on new_contact being set — naming a new contact preserved the
@@ -193,7 +197,7 @@ async function generateFacts(prospect, confirmed_facts) {
 Produce three sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
 
 ### CONFIRMED_FACTS
-(restate the confirmed facts, lightly organized — stay close to what was verified, don't add new claims)
+(restate the confirmed facts, lightly organized — stay close to what was verified, don't add new claims. If the facts contain a section headed "Your specific question:", keep it as its own clearly headed paragraph with that same heading, giving the answer — or plainly that nothing reliable was found. If the facts contain a section headed "CAUTION — COMPANY FILINGS", keep it first, as its own clearly headed paragraph, in the same careful wording.)
 
 ### LIKELY_DYNAMICS
 (reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality)
@@ -326,7 +330,8 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: 'Invalid request.' };
   }
 
-  const { report_id, prospect, confirmed_facts, new_contact, session_token } = payload;
+  const { report_id, prospect, new_contact, session_token, rerun_wildcard_query } = payload;
+  let confirmed_facts = payload.confirmed_facts;
 
   if (!report_id || !prospect || !confirmed_facts) {
     return { statusCode: 400, body: 'report_id, prospect, and confirmed_facts are required.' };
@@ -340,6 +345,19 @@ exports.handler = async function (event) {
         error_message: 'Session check failed inside the background worker (not logged in, or session expired between starting and running the job).'
       });
       return { statusCode: 401, body: 'Not authorized.' };
+    }
+
+    // BUILD 45: a specific question entered on a re-run is researched now and added to the facts.
+    if (rerun_wildcard_query && String(rerun_wildcard_query).trim()) {
+      try {
+        const rb = require('./presales-research-background.js');
+        const sites = prospect.company_website ? String(prospect.company_website).split(',').map((w) => w.trim()).filter(Boolean) : [];
+        const sq = await rb.researchSpecificQuestion(rerun_wildcard_query, prospect.company_name, sites, null, [prospect.notes, prospect.meeting_objective].filter(Boolean).join(' | '), prospect.prospect_name);
+        if (sq) {
+          confirmed_facts = confirmed_facts + '\n\n' + rb.specificQuestionSection(sq);
+          if (sq.usage) { try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-generate-background', action: 'specific_question', model: sq.model, claudeResponse: { usage: sq.usage } }); } catch (e) { /* cosmetic */ } }
+        }
+      } catch (e) { /* the plan is still generated without it */ }
     }
 
     const isNonLmi = member.user_segment === 'non_lmi';
