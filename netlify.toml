@@ -38,6 +38,14 @@
 [functions."gleaner-generate-background"]
   included_files = ["netlify/functions/lmi-context.md", "netlify/functions/spin-context.md"]
 
+# BUILD 93: the country source lists (country-sources.json) are read by the research functions. require() normally
+# bundles a .json file, but it is listed here as well, because a missing data file has bitten this project before.
+[functions."presales-research-background"]
+  included_files = ["netlify/functions/country-sources.json"]
+
+[functions."presales-research"]
+  included_files = ["netlify/functions/country-sources.json"]
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/:splat"
