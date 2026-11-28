@@ -1,5 +1,16 @@
 // PREPDO — presales-research-background.js
-// CURRENT VERSION: BUILD 93 (28 Nov 2026). Newest entry first below.
+// CURRENT VERSION: BUILD 93.1 (28 Nov 2026). Newest entry first below.
+// BUILD 93.1 | 2026-11-28: FIXES FROM THE FIRST LIVE COMPARISON (Bloom). (1) The named-contact question is skipped when no contact
+// name was given (it used to answer with a chat message that was counted as a finding); any reply that merely asks the user for
+// information counts as 'nothing found'. (2) Tidier text: narration lines ('Based on my search...') and '---' marks are removed
+// and citation line breaks are joined back into their bullet. (3) New evidence rules: a total or derived figure is reported
+// only if a source states it (or shown as 'calculated' with its parts); the figure from the LATEST filing, not incorporation
+// year, is the current one. (4) The specific-question step now has the same 'latest figure wins', 'no derived totals' and
+// 'sources differ' rules. (5) Questions widened: subsidiaries and group companies, latest paid-up capital with its filing
+// date, investor board nominees, target cities and customer segments, named corporate clients. (6) CONSISTENCY CHECK: one small
+// extra AI call reads the finished facts and lists possible inconsistencies under 'Check these' (same item with two values,
+// totals that do not match the rounds listed, a person with conflicting roles). It only quotes the facts, never adds or
+// deletes any, and is stored in structured_data.consistency_check.
 // BUILD 93 | 2026-11-28: THE 12 QUESTIONS REBUILT + COUNTRY SOURCES. (1) New 12 questions (recent developments, ownership
 // and funding history, registry and financials, market position and where it is losing ground, leadership, management's own
 // statements of gaps, operational pain points, people signals, existing solutions in the seller's area, named contact,
@@ -101,17 +112,17 @@ const TOPICS_BATCH_1 = [
   {
     key: 'recent',
     label: 'Recent Developments & Stated Plans',
-    focus: 'what has happened at this company in the last 12 months (announcements, launches, expansions, closures, acquisitions, contracts won or lost, restructuring, leadership changes) AND what the company or its leaders have publicly said they plan next (targets, new sites, new products, stated priorities). For every item give the date and the source'
+    focus: 'what has happened at this company in the last 12 months (announcements, launches, expansions, closures, acquisitions, contracts won or lost, restructuring, leadership changes) AND what the company or its leaders have publicly said they plan next (targets, new sites, new products, target cities, segments or customer types, stated priorities). For every item give the date and the source'
   },
   {
     key: 'ownership',
     label: 'Ownership, Investors & Funding History',
-    focus: 'who owns this company: promoters or founders, major shareholders and investors, each funding round or stake sale with its date, amount and percentage where published, and any later change (a later round usually supersedes an earlier percentage, so look for the latest figure and say which date it is as of). Also name any parent, holding or group company. Report only what a source states'
+    focus: 'who owns this company: promoters or founders, major shareholders and investors, each funding round or stake sale with its date, amount and percentage where published, and any later change (a later round usually supersedes an earlier percentage, so look for the latest figure and say which date it is as of). Also name any parent, holding or group company, and the board directors or observers each investor has nominated. Report only what a source states'
   },
   {
     key: 'registry_financials',
     label: 'Corporate Registry & Precise Financials',
-    focus: 'corporate registry information and precise financial data for this company: legal name, registration number, incorporation date, registered address, directors, paid-up capital, and revenue, profit, net worth and borrowings by year as filed or reported. Search the official registry and regulator for the company\'s country first, then business-data sites and the business press. Report standalone and consolidated figures separately if both exist, and state the financial year for every figure'
+    focus: 'corporate registry information and precise financial data for this company: legal name, registration number, incorporation date, registered address, directors, subsidiaries and group companies, the LATEST paid-up capital as per the most recent filing (with its date, not the figure at incorporation), and revenue, profit, net worth and borrowings by year as filed or reported. Search the official registry and regulator for the company\'s country first, then business-data sites and the business press. Report standalone and consolidated figures separately if both exist, and state the financial year for every figure'
   },
   {
     key: 'market',
@@ -154,7 +165,7 @@ const TOPICS_BATCH_2 = [
   {
     key: 'named_customers',
     label: 'Customers, Partners & Recognition',
-    focus: 'customers, clients, partners and distributors this company publicly names, and awards, certifications, rankings or recognition the company has received in the last 2-3 years, each with date and source'
+    focus: 'customers, clients (including named corporate clients), partners and distributors this company publicly names, and awards, certifications, rankings or recognition the company has received in the last 2-3 years, each with date and source'
   },
   {
     key: 'catch_all',
@@ -199,7 +210,9 @@ const EVIDENCE_RULES = `EVIDENCE RULES (apply to every fact you report):
 4. If a later figure or event replaces an earlier one (a new funding round, a revised stake, a new CEO), report the LATEST and say it is as of its date. Do not report an older figure as current.
 5. Mark a claim "(single source)" when only one source states it, and "(sources differ)" with both values when they disagree.
 6. Search under EVERY name the company is known by (legal name, brand, former name, parent or group name) found on the website or in your searches.
-7. If nothing is found, say so plainly using the required sentence; never fill space with generic statements.`;
+7. TOTALS AND DERIVED FIGURES: report a total, percentage or conclusion (for example 'total raised', 'majority stake') only if a source states it. If you add figures yourself, show the parts and mark the result 'calculated'. Never present your own sum as a sourced fact.
+8. CURRENT FIGURES: use the figure from the most recent filing or report and give its year or date. A figure from the year of incorporation is not the current one.
+9. If nothing is found, say so plainly using the required sentence; never fill space with generic statements.`;
 
 
 function parseWebsites(company_website) {
@@ -224,11 +237,23 @@ function sleep(ms) {
 // ---------- BUILD 91b: classify what a topic actually returned ----------
 const UNVERIFIED_RE = /could not verify information about the specific company/i;
 const NOTHING_RE = /nothing specific found on this topic/i;
+// BUILD 93.1: a reply that only asks the user for information is not a finding.
+const ASKING_RE = /(could you please provide|you haven'?t provided|please provide (the|their|a)|i need (to identify|more information|the (name|contact)))/i;
 function cleanTopicText(t) {
-  // Drop the model's narration lines ("I'll search for ...") that sit before the facts.
-  let out = String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln)).join('\n');
-  // Citation markup leaves a bullet alone on its own line, or a bracket on a new line: join them back.
-  out = out.replace(/([•\-*])[ \t]*\n+[ \t]*(?=\S)/g, '$1 ').replace(/\n+[ \t]*(?=\()/g, ' ');
+  // Drop the model's narration lines ("I'll search for ...", "Based on my search, here are...") that sit before the facts.
+  let out = String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln) && !/^\s*(Based on (my|the) (search|research|verified)|Here (are|is) (the|my) (key |confirmed )?(findings|facts|results|information))\b/i.test(ln) && !/^\s*-{3,}\s*$/.test(ln)).join('\n');
+  out = out.replace(/^(\s*)-{3,}\s*(?=[•\-*])/gm, '$1');
+  // Citation markup splits a bullet over several lines: join a continuation line back onto its bullet.
+  const lines = out.split('\n'); const joined = [];
+  for (const ln of lines) {
+    if (!ln.trim()) { joined.push(''); continue; }
+    const prev = joined.length ? joined[joined.length - 1] : '';
+    const startsNew = /^\s*([•\-*]\s|#{1,6}\s|\d+[.)]\s|\*\*|\|)/.test(ln);
+    if (!startsNew && prev && /^\s*([•\-*]\s)/.test(prev)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ' ' + ln.trim();
+    else if (!startsNew && prev && !/^\s*#{1,6}\s/.test(prev) && prev.trim() && !/[.:!?)]\s*$/.test(prev)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ' ' + ln.trim();
+    else joined.push(ln);
+  }
+  out = joined.join('\n').replace(/[ \t]+([,;.])/g, '$1');
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 // 'confirmed' | 'nothing' | 'unverified' | 'failed'
@@ -239,6 +264,7 @@ function classifyTopic(sec) {
   // The research is told to answer ONLY with that sentence; if it appears at all, the topic has no findings,
   // however much narration surrounds it (the narration is not a finding and may mention other companies).
   if (NOTHING_RE.test(t)) return 'nothing';
+  if (ASKING_RE.test(t)) return 'nothing';
   if (t.replace(/\s+/g, ' ').trim().length < 25) return 'nothing';
   return 'confirmed';
 }
@@ -451,7 +477,8 @@ Rules:
 3. Professional and public business facts only: role, firm, investments, board seats, public statements. Never private life, family, health or personal finances.
 4. If the question concerns how the named party relates to the prospect company (shareholder, investor, lender, partner, board seat, funding rounds), check that link specifically. Give dates and amounts only if a source states them.
 5. Anything the salesperson typed in their notes or in the question is a lead, not proof. If searches confirm it say "confirmed"; if not, say "The salesperson reports X; not confirmed in public sources."
-6. Give 3-6 short bullets, each ending with the source name in brackets. If you find nothing reliable, reply with ONLY: "Nothing specific found on this question."`,
+6. If a later round, filing or report replaces an earlier figure (for example a second funding round raising a stake from 35% to 45%), report the LATEST figure first with its date, and mention the earlier one as earlier. If sources give different figures, show both with their dates and write (sources differ). Never report a total or conclusion that no source states; if you add figures yourself, show the parts and mark it 'calculated'.
+7. Give 3-6 short bullets, each ending with the source name and month/year in brackets. If you find nothing reliable, reply with ONLY: "Nothing specific found on this question."`,
         messages: [{ role: 'user', content: `Prospect company: ${company_name}\n${websiteBlock}${prospect_name ? `\nMeeting contact: ${prospect_name}` : ''}${siteBlock}${notesBlock}\n\nQUESTION TO ANSWER: ${q}` }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
         max_tokens: 900
@@ -627,7 +654,27 @@ ${EVIDENCE_RULES}`,
   return { key: topic.key, label: topic.label, ok: false, error: lastErr?.message || 'Unknown error' };
 }
 
-function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', filing = null, specific = null) {
+// ---------- BUILD 93.1: consistency check over the finished facts ----------
+// Returns { text, usage, model } where text is '' when nothing doubtful was found. Never throws. Never changes the facts.
+async function checkConsistency(factsText) {
+  try {
+    const body = String(factsText || '').slice(0, 16000);
+    if (body.length < 400) return { text: '' };
+    const res = await callClaude({
+      model: 'claude-haiku-4-5-20251001',
+      system: `You proof-read a set of research facts about ONE company and list possible inconsistencies. Use ONLY what the text says; add no outside knowledge and no new facts. Look for: (a) the same item given with different values in different places (revenue, stake percentage, capital, headcount, dates); (b) a total or conclusion that does not match the amounts listed (add up any funding rounds or amounts the text lists and compare with any total stated; say the sum you got); (c) a person or firm described in conflicting roles; (d) a figure that looks like it belongs to a different year or date than the text says. Reply with at most 6 short bullets, each starting "- " and naming both versions and where each appears. If you find nothing doubtful, reply with only: NONE`,
+      messages: [{ role: 'user', content: body }],
+      max_tokens: 600
+    });
+    const t = String(extractText(res) || '').trim();
+    if (!t || /^none\b/i.test(t) || !/^\s*[-•*]/m.test(t)) return { text: '', usage: res.usage, model: res.model };
+    return { text: t, usage: res.usage, model: res.model };
+  } catch (e) {
+    return { text: '' };
+  }
+}
+
+function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', filing = null, specific = null, consistency = '') {
   const succeeded = sections.filter((s) => s.ok);
   const failed = sections.filter((s) => !s.ok);
 
@@ -667,6 +714,10 @@ function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', 
 
   if (linkedin_paste && linkedin_paste.trim()) {
     confirmed_facts += `\n\n### Contact's LinkedIn Profile (pasted by the salesperson)\n${linkedin_paste.trim()}`;
+  }
+
+  if (consistency && String(consistency).trim()) {
+    confirmed_facts += `\n\n### Check these (possible inconsistencies in the research)\n${String(consistency).trim()}\n*These are points where the research disagrees with itself. Confirm them before relying on either version.*`;
   }
 
   if (failed.length > 0) {
@@ -727,7 +778,9 @@ exports.handler = async function (event) {
     let doneCount = 0;
     const totalTopics = TOPICS_BATCH_1.length + TOPICS_BATCH_2.length;
     const runTopic = async (topic) => {
-      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes, ctx);
+      const res = (topic.key === 'named_contact' && !String(prospect_name || '').trim())
+        ? { key: topic.key, label: topic.label, ok: true, text: 'Nothing specific found on this topic.' } // BUILD 93.1: no contact named, so nothing to research
+        : await researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes, ctx);
       doneCount += 1;
       const mine = doneCount;
       try { await supaPatch(`reports?id=eq.${report_id}`, { progress_done: mine, progress_total: totalTopics }); } catch (e) { /* progress is cosmetic */ }
@@ -846,12 +899,22 @@ exports.handler = async function (event) {
       }
     } catch (e) { specific = null; }
 
-    const confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote, filing, specific);
+    let confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote, filing, specific);
+    // BUILD 93.1: one small consistency check over the finished facts; it only adds a 'Check these' list.
+    let consistencyText = '';
+    try {
+      const cc = await checkConsistency(confirmed_facts);
+      consistencyText = cc.text || '';
+      if (cc.usage) {
+        try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-research-background', action: 'consistency_check', model: cc.model, claudeResponse: { usage: cc.usage } }); } catch (e) { /* cosmetic */ }
+      }
+      if (consistencyText) confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote, filing, specific, consistencyText);
+    } catch (e) { consistencyText = ''; }
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       status: 'complete',
       confirmed_facts,
-      structured_data: { research_topics: finalSections, batches_complete: 2, country: ctx.country || null, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null, specific_question: specific ? { query: specific.query, ok: specific.ok, found: specific.found, text: specific.text } : null, filing_check: filing ? { outcome: filing.outcome, line: filing.line, source: filing.source, checked_at: filing.checked_at } : null }
+      structured_data: { research_topics: finalSections, batches_complete: 2, country: ctx.country || null, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null, consistency_check: consistencyText || null, specific_question: specific ? { query: specific.query, ok: specific.ok, found: specific.found, text: specific.text } : null, filing_check: filing ? { outcome: filing.outcome, line: filing.line, source: filing.source, checked_at: filing.checked_at } : null }
     });
 
     return { statusCode: 200, body: 'done' };
@@ -878,3 +941,5 @@ exports.researchSpecificQuestion = researchSpecificQuestion;
 exports.specificQuestionSection = specificQuestionSection;
 exports.FILING_MARK = FILING_MARK;
 exports.sellerAreaFor = sellerAreaFor;
+exports.checkConsistency = checkConsistency;
+exports.cleanTopicText = cleanTopicText;
