@@ -1,4 +1,10 @@
 // PREPDO — presales-generate-background.js
+// BUILD 47 | 2026-11-28 (ships in the Build 93.2 package): GROUNDING RULES. The second Bloom plan turned research labels into facts ('systemic
+// cleanliness failures' from four undated reviews), put a single anonymous review to the prospect as established fact in the questions, and added
+// claims the research never made ('a first profit', '200+ properties', 'a 3-5 year performance covenant', a legal exposure under an Act). One
+// block of rules is now added to every prompt (all four sections): only the facts box may supply names, numbers, dates, ownership or legal
+// statements; a single review is one review; a stale forecast is not a missed target; where the facts give two different figures the later-dated
+// one is used and the other is named; Likely Dynamics starts with a line saying it is inference.
 // BUILD 46 | 2026-11-28 (ships in the Build 93.1 package): FIXES THE CUT-OFF PLAN SECTIONS. The plan step used to have the AI re-type the whole facts
 // box inside a 2,000-token limit, which used up the budget (Likely Dynamics was cut off mid-sentence, Assumptions came out as '(not generated)') and
 // also dropped sources, dates and conflicting figures. The confirmed facts now go into the report word for word (only layout tidying), and the AI
@@ -175,6 +181,15 @@ function parseMarkers(text, markers) {
   return result;
 }
 
+// BUILD 47: one set of rules, added to every section's prompt through buildProspectBlock.
+const GROUNDING_RULES = `GROUNDING RULES (these override any wish to sound more insightful):
+1. The CONFIRMED FACTS above are the ONLY source for names, numbers, dates, ownership, headcount, property counts, financial results and legal or regulatory statements. If something is not in them, do not state it. You may ask about it as a question, or list it as an assumption to check.
+2. Do not add claims such as 'first profit', a larger number of properties, covenants, or a legal exposure under a named Act unless the facts say so.
+3. A single customer review is ONE review. Never call a few reviews a pattern, 'systemic' or 'critical'. In questions, never put one review to the prospect as established fact; phrase it as 'I came across a guest review about X, is that something you see?'.
+4. Where the facts give two different figures or targets for the same thing, use the one with the later date and name the other, or say the sources differ. A forecast made earlier is not a missed target.
+5. Anything you infer must be worded as inference ('likely', 'may', 'worth checking'), never as fact.
+6. Items listed under 'Check these' in the facts are doubtful: do not build conclusions on them; carry them into the meeting as things to confirm.`;
+
 function buildProspectBlock(prospect, confirmed_facts) {
   const secondContact = prospect.prospect_name_2
     ? `\nSecond Contact: ${prospect.prospect_name_2}, role: ${prospect.position_2 || '(unknown)'}${prospect.linkedin_url_2 ? ', LinkedIn: ' + prospect.linkedin_url_2 : ''} (also involved in this account — consider both contacts' likely perspectives and priorities where relevant, not just the primary one)`
@@ -189,7 +204,9 @@ Meeting objective: ${prospect.meeting_objective || '(not specified)'}
 Notes: ${prospect.notes || '(none)'} (if this mentions a referral source, introduction, or how the meeting was arranged, treat that as important context and reflect it in Strategy/Assumptions — e.g. a warm introduction changes how Rapport/Credibility can be opened)
 
 CONFIRMED FACTS (from research, reviewed and possibly edited by the salesperson — treat as ground truth):
-${confirmed_facts}`;
+${confirmed_facts}
+
+${GROUNDING_RULES}`;
 }
 
 async function generateFacts(prospect, confirmed_facts) {
@@ -201,7 +218,7 @@ async function generateFacts(prospect, confirmed_facts) {
 Produce two sections for a presales prep report. (The confirmed facts themselves are NOT to be restated: they are placed into the report exactly as written, separately.) Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
 
 ### LIKELY_DYNAMICS
-(reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality. If the facts include a "Check these" list of possible inconsistencies, do not build inferences on the doubtful items)
+(begin with the plain line: Inference, not confirmed fact. Then reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality. If the facts include a "Check these" list of possible inconsistencies, do not build inferences on the doubtful items)
 
 ### ASSUMPTIONS
 (open questions the confirmed facts can't answer — things worth validating early in the meeting. Include, briefly, any item in a "Check these" list that the salesperson should confirm in the meeting)`;
