@@ -1,4 +1,8 @@
 // PREPDO — presales-generate-background.js
+// BUILD 46 | 2026-11-28 (ships in the Build 93.1 package): FIXES THE CUT-OFF PLAN SECTIONS. The plan step used to have the AI re-type the whole facts
+// box inside a 2,000-token limit, which used up the budget (Likely Dynamics was cut off mid-sentence, Assumptions came out as '(not generated)') and
+// also dropped sources, dates and conflicting figures. The confirmed facts now go into the report word for word (only layout tidying), and the AI
+// writes just Likely Dynamics and Assumptions, with a larger limit (3,500).
 // BUILD 45 | 2026-11-28 (ships in the Build 92 package; this file's own numbering continues from Build 44 below): (1) the 'specific question' box on a RE-RUN now works: it was passed here but never read. The
 // question is researched first (same step as at setup, from presales-research-background.js) and added to the facts as
 // "Your specific question: ...". (2) The plan's Confirmed Facts section now keeps a "Your specific question" section and a
@@ -194,26 +198,38 @@ async function generateFacts(prospect, confirmed_facts) {
 
 ---
 
-Produce three sections for a presales prep report. Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
-
-### CONFIRMED_FACTS
-(restate the confirmed facts, lightly organized — stay close to what was verified, don't add new claims. If the facts contain a section headed "Your specific question:", keep it as its own clearly headed paragraph with that same heading, giving the answer — or plainly that nothing reliable was found. If the facts contain a section headed "CAUTION — COMPANY FILINGS", keep it first, as its own clearly headed paragraph, in the same careful wording.)
+Produce two sections for a presales prep report. (The confirmed facts themselves are NOT to be restated: they are placed into the report exactly as written, separately.) Respond with EXACTLY these markdown section headers, each on its own new line, nothing before the first or after the last:
 
 ### LIKELY_DYNAMICS
-(reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality)
+(reasonable inference about organizational dynamics from company size/industry/situation — label as inference, not fact; stay at the company/role level, do not speculate about the named individual contact's personality. If the facts include a "Check these" list of possible inconsistencies, do not build inferences on the doubtful items)
 
 ### ASSUMPTIONS
-(open questions the confirmed facts can't answer — things worth validating early in the meeting)`;
+(open questions the confirmed facts can't answer — things worth validating early in the meeting. Include, briefly, any item in a "Check these" list that the salesperson should confirm in the meeting)`;
 
     const res = await callClaude({
       model: 'claude-haiku-4-5-20251001',
       messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2000
+      max_tokens: 3500
     });
-    return { ok: true, sections: parseMarkers(extractText(res), ['CONFIRMED_FACTS', 'LIKELY_DYNAMICS', 'ASSUMPTIONS']), model: res.model, usage: res.usage };
+    const sections = parseMarkers(extractText(res), ['LIKELY_DYNAMICS', 'ASSUMPTIONS']);
+    // BUILD 46: the facts go into the report word for word (nothing is re-typed by the AI, so no source, date or
+    // conflict can be dropped and nothing can be cut off). Headings are kept at '###' so the report layout holds.
+    sections.CONFIRMED_FACTS = verbatimFacts(confirmed_facts);
+    return { ok: true, sections, model: res.model, usage: res.usage };
   } catch (err) {
     return { ok: false, error: err.message };
   }
+}
+
+// BUILD 46: the confirmed facts exactly as written, with only layout-safe tidying.
+function verbatimFacts(t) {
+  return String(t || '')
+    .split('\n')
+    .filter((ln) => !/^\s*-{3,}\s*$/.test(ln))
+    .map((ln) => ln.replace(/^(\s*)#{1,2}\s+/, '$1### ').replace(/^\s*-{3,}\s*(?=[•\-*])/, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 async function generateStrategy(prospect, confirmed_facts, methodologyContext) {
@@ -459,7 +475,7 @@ exports.handler = async function (event) {
     if (!results[3].ok) failedParts.push('SPIN Questions');
 
     const detailed = [
-      '## Confirmed Facts', allSections.CONFIRMED_FACTS || '(not generated)',
+      '## Confirmed Facts', allSections.CONFIRMED_FACTS || verbatimFacts(confirmed_facts) || '(not generated)',
       '', '## Likely Organizational Dynamics', allSections.LIKELY_DYNAMICS || '(not generated)',
       '', '## Assumptions to Validate', allSections.ASSUMPTIONS || '(not generated)',
       '', '## Recommended Sales Strategy', allSections.STRATEGY || '(not generated)'
