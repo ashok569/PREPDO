@@ -1,5 +1,14 @@
 // PREPDO — presales-research-background.js
-// CURRENT VERSION: BUILD 93.1 (28 Nov 2026). Newest entry first below.
+// CURRENT VERSION: BUILD 93.2 (28 Nov 2026). Newest entry first below.
+// BUILD 93.2 | 2026-11-28: FIXES FROM THE SECOND BLOOM RUN (read in the PDF). (1) A bullet marker standing alone on a line is joined to the
+// text on the next line, and bold marks are removed from research text: lines that began with bold text lost it in the PDF (the CEO's name,
+// the 'Kedaara' heading, the CIN label). Headings inside a topic become a plain 'Label:' line. (2) Lines that were wrapped in italics
+// (the 'Not found' list, 'Pages read', the 'Check these' note) vanished in the PDF; they are now plain text. (3) INTERPRETATION STRIPPER:
+// sentences that only interpret ('Indicates supplier payment difficulties', 'Systemic cleanliness failures', 'signals exposure') are
+// removed from research text; the sourced fact in front of them stays. (4) New evidence rules 10-13: no interpretation, one review is one
+// review, nothing 'from the company's own website' unless the website profile says it, no filler such as 'range, exact figure proprietary'.
+// (5) The 'Anything else' question must not repeat the other eleven. (6) The consistency check flags only two explicit conflicting values
+// (and two different targets), says which is older, and writes plain text.
 // BUILD 93.1 | 2026-11-28: FIXES FROM THE FIRST LIVE COMPARISON (Bloom). (1) The named-contact question is skipped when no contact
 // name was given (it used to answer with a chat message that was counted as a finding); any reply that merely asks the user for
 // information counts as 'nothing found'. (2) Tidier text: narration lines ('Based on my search...') and '---' marks are removed
@@ -145,7 +154,7 @@ const TOPICS_BATCH_2 = [
   {
     key: 'operational_pain',
     label: 'Operational & Execution Pain Points',
-    focus: 'specific, evidenced signs of operational or execution difficulty: project delays, cost or schedule overruns, quality or delivery problems, customer complaints, regulatory notices, labour or supply problems, or analyst commentary on execution risk. Search for this directly and specifically, not by inference from other topics. Each item needs a date and a source; a general characterisation without evidence does not count'
+    focus: 'specific, evidenced signs of operational or execution difficulty: project delays, cost or schedule overruns, quality or delivery problems, customer complaints, regulatory notices, labour or supply problems, or analyst commentary on execution risk. Search for this directly and specifically, not by inference from other topics. Each item needs a date and a source; a general characterisation without evidence does not count. Report each customer review as one review (platform, property, date or \'undated, single review\'), never as a pattern'
   },
   {
     key: 'people',
@@ -170,7 +179,7 @@ const TOPICS_BATCH_2 = [
   {
     key: 'catch_all',
     label: 'Anything Else Worth Knowing',
-    focus: 'anything else a salesperson would genuinely want to know before this meeting that the other eleven areas do not cover and that is not a repeat of them: for example customer-facing technical or service teams, critical scarce skills, an unusual business model, pending litigation, regulatory exposure, or a recent crisis. Say plainly if there is nothing further'
+    focus: 'anything else a salesperson would genuinely want to know before this meeting that the other eleven areas do not cover and that is not a repeat of them: for example customer-facing technical or service teams, critical scarce skills, an unusual business model, pending litigation, regulatory exposure, or a recent crisis. Do NOT repeat any ownership, funding, financial, leadership, customer, workforce or plan fact that the other eleven areas already cover; report only what is new. Say plainly if there is nothing further'
   }
 ];
 
@@ -212,7 +221,11 @@ const EVIDENCE_RULES = `EVIDENCE RULES (apply to every fact you report):
 6. Search under EVERY name the company is known by (legal name, brand, former name, parent or group name) found on the website or in your searches.
 7. TOTALS AND DERIVED FIGURES: report a total, percentage or conclusion (for example 'total raised', 'majority stake') only if a source states it. If you add figures yourself, show the parts and mark the result 'calculated'. Never present your own sum as a sourced fact.
 8. CURRENT FIGURES: use the figure from the most recent filing or report and give its year or date. A figure from the year of incorporation is not the current one.
-9. If nothing is found, say so plainly using the required sentence; never fill space with generic statements.`;
+9. If nothing is found, say so plainly using the required sentence; never fill space with generic statements.
+10. NO INTERPRETATION. After a fact and its source, stop. Do not add a sentence saying what it indicates, suggests, signals or means, and do not add a label such as 'systemic', 'critical' or 'a quality issue'. The salesperson draws the conclusions.
+11. REVIEWS AND COMPLAINTS: report each as one review, with the platform, the property and the date (or 'undated, single review'). Never describe a few reviews as a pattern, a trend or 'systemic'.
+12. Write '(from the company's own website)' only for something that appears in the VERIFIED FROM THE COMPANY'S OWN WEBSITE block. Anything else carries its real source.
+13. If an exact figure is not available, leave the item out. Do not write ranges, 'exact figure proprietary', 'behind paywall' or similar filler.`;
 
 
 function parseWebsites(company_website) {
@@ -239,21 +252,49 @@ const UNVERIFIED_RE = /could not verify information about the specific company/i
 const NOTHING_RE = /nothing specific found on this topic/i;
 // BUILD 93.1: a reply that only asks the user for information is not a finding.
 const ASKING_RE = /(could you please provide|you haven'?t provided|please provide (the|their|a)|i need (to identify|more information|the (name|contact)))/i;
+// BUILD 93.2: sentences that only interpret a fact (not a fact themselves) are removed; the sourced fact in front of them stays.
+const INTERP_RE = /\b(indicat\w*|suggest\w*|signal\w*|impl(?:y|ies|ied)|systemic|critical (?:operational|failure)|potential (?:for|revenue)|may (?:indicate|flag|point|suggest)|could (?:indicate|signal|suggest)|likely|competitive differentiator|exposure|friction|complexity|dilution|trajectory|milestone|raises? (?:the )?question|execution problems?|quality[- ]control issue)\b/i;
+function stripInterpretation(line) {
+  if (!/\S/.test(line)) return line;
+  const m = line.match(/^(\s*(?:[•\-*]\s+|\d+[.)]\s+)?)([\s\S]*)$/);
+  const lead = m[1]; const body = m[2];
+  const parts = body.split(/(?<=[.!?])\s+(?=[A-Z])/);
+  if (parts.length < 2) return line;
+  const kept = [parts[0]];
+  for (let i = 1; i < parts.length; i++) {
+    const sent = parts[i];
+    const prev = parts[i - 1];
+    const words = sent.trim().split(/\s+/).length;
+    const afterCitation = /[)\]]\.?\s*$/.test(prev.trim()) || /\(\s*[^)]*\)\.?\s*$/.test(prev.trim());
+    const hasDigit = /\d/.test(sent);
+    const startsPronoun = /^(This|That|These|It|Note:)\b/.test(sent.trim());
+    const interp = INTERP_RE.test(sent) && (!hasDigit || startsPronoun);
+    const shortLabel = afterCitation && words <= 8 && !hasDigit && !/["“]/.test(sent) && !/\s[A-Z]/.test(sent.trim().replace(/^\S+\s/, ' '));
+    if (interp || shortLabel) continue;
+    kept.push(sent);
+  }
+  return lead + kept.join(' ');
+}
 function cleanTopicText(t) {
   // Drop the model's narration lines ("I'll search for ...", "Based on my search, here are...") that sit before the facts.
   let out = String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln) && !/^\s*(Based on (my|the) (search|research|verified)|Here (are|is) (the|my) (key |confirmed )?(findings|facts|results|information))\b/i.test(ln) && !/^\s*-{3,}\s*$/.test(ln)).join('\n');
   out = out.replace(/^(\s*)-{3,}\s*(?=[•\-*])/gm, '$1');
+  // BUILD 93.2: bold marks removed (a line starting with bold text lost it in the PDF); headings inside a topic become plain 'Label:' lines.
+  out = out.replace(/\*\*/g, '').replace(/^[ \t]*#{1,6}[ \t]+([^\n]*?)[ \t]*:?[ \t]*$/gm, '$1:');
+  // BUILD 93.2: a bullet marker standing alone on its line belongs to the next non-empty line.
+  out = out.replace(/^([ \t]*[•\-*])[ \t]*\n+(?=[ \t]*\S)/gm, '$1 ');
   // Citation markup splits a bullet over several lines: join a continuation line back onto its bullet.
   const lines = out.split('\n'); const joined = [];
   for (const ln of lines) {
     if (!ln.trim()) { joined.push(''); continue; }
     const prev = joined.length ? joined[joined.length - 1] : '';
-    const startsNew = /^\s*([•\-*]\s|#{1,6}\s|\d+[.)]\s|\*\*|\|)/.test(ln);
-    if (!startsNew && prev && /^\s*([•\-*]\s)/.test(prev)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ' ' + ln.trim();
+    const startsNew = /^\s*([•\-*]\s|#{1,6}\s|\d+[.)]\s|\|)/.test(ln);
+    if (prev && prev.trim() && /^\s*[;,.)]/.test(ln)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ln.trim();
+    else if (!startsNew && prev && /^\s*([•\-*]\s)/.test(prev)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ' ' + ln.trim();
     else if (!startsNew && prev && !/^\s*#{1,6}\s/.test(prev) && prev.trim() && !/[.:!?)]\s*$/.test(prev)) joined[joined.length - 1] = prev.replace(/\s+$/, '') + ' ' + ln.trim();
     else joined.push(ln);
   }
-  out = joined.join('\n').replace(/[ \t]+([,;.])/g, '$1');
+  out = joined.map(stripInterpretation).join('\n').replace(/[ \t]+([,;.])/g, '$1');
   return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 // 'confirmed' | 'nothing' | 'unverified' | 'failed'
@@ -478,7 +519,8 @@ Rules:
 4. If the question concerns how the named party relates to the prospect company (shareholder, investor, lender, partner, board seat, funding rounds), check that link specifically. Give dates and amounts only if a source states them.
 5. Anything the salesperson typed in their notes or in the question is a lead, not proof. If searches confirm it say "confirmed"; if not, say "The salesperson reports X; not confirmed in public sources."
 6. If a later round, filing or report replaces an earlier figure (for example a second funding round raising a stake from 35% to 45%), report the LATEST figure first with its date, and mention the earlier one as earlier. If sources give different figures, show both with their dates and write (sources differ). Never report a total or conclusion that no source states; if you add figures yourself, show the parts and mark it 'calculated'.
-7. Give 3-6 short bullets, each ending with the source name and month/year in brackets. If you find nothing reliable, reply with ONLY: "Nothing specific found on this question."`,
+7. Facts only: after a fact and its source, add no sentence about what it indicates, suggests or means, and add no 'Note:' of your own. Report a single review as one review, not a pattern.
+8. Give 3-6 short bullets, each ending with the source name and month/year in brackets. If you find nothing reliable, reply with ONLY: "Nothing specific found on this question."`,
         messages: [{ role: 'user', content: `Prospect company: ${company_name}\n${websiteBlock}${prospect_name ? `\nMeeting contact: ${prospect_name}` : ''}${siteBlock}${notesBlock}\n\nQUESTION TO ANSWER: ${q}` }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
         max_tokens: 900
@@ -497,8 +539,8 @@ Rules:
 function specificQuestionSection(sq) {
   if (!sq || !sq.query) return '';
   const body = sq.ok
-    ? (sq.found ? sq.text : '*No reliable public information was found to answer this question. If you know something about it, add it to this box.*')
-    : '*This question could not be researched this time (a technical problem). You can add what you know to this box.*';
+    ? (sq.found ? sq.text : 'No reliable public information was found to answer this question. If you know something about it, add it to this box.')
+    : 'This question could not be researched this time (a technical problem). You can add what you know to this box.';
   return `### Your specific question: ${sq.query}\n${body}`;
 }
 
@@ -662,7 +704,7 @@ async function checkConsistency(factsText) {
     if (body.length < 400) return { text: '' };
     const res = await callClaude({
       model: 'claude-haiku-4-5-20251001',
-      system: `You proof-read a set of research facts about ONE company and list possible inconsistencies. Use ONLY what the text says; add no outside knowledge and no new facts. Look for: (a) the same item given with different values in different places (revenue, stake percentage, capital, headcount, dates); (b) a total or conclusion that does not match the amounts listed (add up any funding rounds or amounts the text lists and compare with any total stated; say the sum you got); (c) a person or firm described in conflicting roles; (d) a figure that looks like it belongs to a different year or date than the text says. Reply with at most 6 short bullets, each starting "- " and naming both versions and where each appears. If you find nothing doubtful, reply with only: NONE`,
+      system: `You proof-read a set of research facts about ONE company and list possible inconsistencies. Use ONLY what the text says; add no outside knowledge and no new facts. Flag an item ONLY when two explicit, different values for the same thing both appear in the text. Look for: (a) the same item given with different values in different places (revenue, stake percentage, capital, headcount, dates, number of rooms or hotels, targets); (b) a stated total that does not match the amounts listed (add up the amounts the text lists and say the sum you got); (c) a person or firm described in conflicting roles or founder lists; (d) two different targets or forecasts for the same thing (for example 12,000 rooms and 25,000 rooms). When one value is dated earlier than the other, say which is older and that the newer normally replaces it; do not call that a contradiction unless the text calls both current. Do NOT flag something merely because it is unusual, and do not flag a difference the text already explains. Write plain text only, with no bold or italics. Reply with at most 6 short bullets, each starting "- " and naming both values and where each appears. If you find nothing doubtful, reply with only: NONE`,
       messages: [{ role: 'user', content: body }],
       max_tokens: 600
     });
@@ -685,14 +727,14 @@ function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', 
     .map((s) => `### ${s.label}\n${s.text}`)
     .join('\n\n');
   if (notFound.length > 0) {
-    confirmed_facts += (confirmed_facts ? '\n\n' : '') + `### Not found on public sources\n*No confirmed public information was found on: ${notFound.map((s) => s.label).join('; ')}.*`;
+    confirmed_facts += (confirmed_facts ? '\n\n' : '') + `### Not found on public sources\nNo confirmed public information was found on: ${notFound.map((s) => s.label).join('; ')}.`;
   }
 
   // BUILD 91: the company's own website, read directly, comes first.
   if (siteInfo && siteInfo.profile) {
-    confirmed_facts = `### From the company's own website (read directly)\n${siteInfo.profile}\n*Pages read: ${siteInfo.pages.slice(0, 4).join(', ')}*\n\n` + confirmed_facts;
+    confirmed_facts = `### From the company's own website (read directly)\n${siteInfo.profile}\n\nPages read: ${siteInfo.pages.slice(0, 4).join(', ')}\n\n` + confirmed_facts;
   } else if (siteNote) {
-    confirmed_facts = `### Company website\n*${siteNote} Add what you know about the company to this box.*\n\n` + confirmed_facts;
+    confirmed_facts = `### Company website\n${siteNote} Add what you know about the company to this box.\n\n` + confirmed_facts;
   }
 
   // BUILD 92b: the salesperson's own question goes straight after the website section (before the 12 topics).
@@ -717,11 +759,11 @@ function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', 
   }
 
   if (consistency && String(consistency).trim()) {
-    confirmed_facts += `\n\n### Check these (possible inconsistencies in the research)\n${String(consistency).trim()}\n*These are points where the research disagrees with itself. Confirm them before relying on either version.*`;
+    confirmed_facts += `\n\n### Check these (possible inconsistencies in the research)\n${String(consistency).trim()}\n\nThese are points where the research disagrees with itself. Confirm them before relying on either version.`;
   }
 
   if (failed.length > 0) {
-    confirmed_facts += `\n\n*(Note: research on ${failed.map((f) => f.label).join(', ')} didn't complete — you can retry just these, or edit this box manually.)*`;
+    confirmed_facts += `\n\n(Note: research on ${failed.map((f) => f.label).join(', ')} didn't complete — you can retry just these, or edit this box manually.)`;
   }
 
   return confirmed_facts;
