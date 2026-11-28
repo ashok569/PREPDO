@@ -1,5 +1,15 @@
 // PREPDO — presales-research-background.js
-// CURRENT VERSION: BUILD 92b (28 Nov 2026). Newest entry first below.
+// CURRENT VERSION: BUILD 93 (28 Nov 2026). Newest entry first below.
+// BUILD 93 | 2026-11-28: THE 12 QUESTIONS REBUILT + COUNTRY SOURCES. (1) New 12 questions (recent developments, ownership
+// and funding history, registry and financials, market position and where it is losing ground, leadership, management's own
+// statements of gaps, operational pain points, people signals, existing solutions in the seller's area, named contact,
+// customers and recognition, anything else). Facts only: every item dated and sourced. (2) Common evidence rules sent with
+// every question: two searches with different purposes (the company's own statements, then an independent source), later
+// figures supersede earlier ones and the date is stated, single-source claims are marked, every known name of the company
+// is searched, nothing found is stated, identity is verified. (3) The country chosen for the prospect selects a source
+// list (country-sources.json: newspapers, registry, regulator, trade press) that is given to the search as where to look
+// first; a country with no list uses open search. (4) Question 9 uses the seller's own area from their organisation
+// profile (nothing hard-wired to one seller). The country is stored with the research (structured_data.country).
 // BUILD 92b | 2026-11-28: THE 'SOMETHING SPECIFIC YOU NEED RESEARCHED' BOX NOW WORKS. It was stored and passed here but
 // never read (the promised 13th topic was never built), so it was silently dropped. It now runs as its own research step
 // after the 12 topics: answers exactly what was asked, about whoever is named (not forced onto the prospect company),
@@ -84,73 +94,113 @@
 const { getMemberFromSession, callClaude, extractText, logApiUsage, supaGet, supaPatch, respond, handleOptions } = require('./_lib.js');
 const { refund, PRICES } = require('./_access.js');
 
+// BUILD 93: the 12 research questions, rebuilt. Facts only (what, when, source); no interpretation here - that is
+// the analysis stage. {SELLER_AREA} is filled from the salesperson's own organisation (set by their MD), so nothing
+// is hard-wired to one seller.
 const TOPICS_BATCH_1 = [
   {
-    key: 'news',
-    label: 'Recent News & Developments',
-    focus: 'recent news, announcements, or press coverage from the last 6-12 months'
+    key: 'recent',
+    label: 'Recent Developments & Stated Plans',
+    focus: 'what has happened at this company in the last 12 months (announcements, launches, expansions, closures, acquisitions, contracts won or lost, restructuring, leadership changes) AND what the company or its leaders have publicly said they plan next (targets, new sites, new products, stated priorities). For every item give the date and the source'
   },
   {
-    key: 'challenges',
-    label: 'Business Challenges & Market Position',
-    focus: 'business challenges, financial performance, or market position — anything suggesting where the company is under pressure or losing ground'
-  },
-  {
-    key: 'leadership',
-    label: 'Leadership',
-    focus: 'leadership team composition, any recent leadership or executive changes, and specifically who is most likely to hold real decision-making authority for a decision like this — name the specific people involved, not just titles, where possible'
-  },
-  {
-    key: 'growth',
-    label: 'Growth & Competitive Landscape',
-    focus: 'growth plans, expansion, new initiatives, or how the company is positioned against competitors'
+    key: 'ownership',
+    label: 'Ownership, Investors & Funding History',
+    focus: 'who owns this company: promoters or founders, major shareholders and investors, each funding round or stake sale with its date, amount and percentage where published, and any later change (a later round usually supersedes an earlier percentage, so look for the latest figure and say which date it is as of). Also name any parent, holding or group company. Report only what a source states'
   },
   {
     key: 'registry_financials',
     label: 'Corporate Registry & Precise Financials',
-    focus: 'corporate registry information and precise financial data for this company. Search specifically on business registry/database sites (Tofler, Tracxn, or similar aggregators for India-based companies; the equivalent registry or financial-data sources for the company\'s own country otherwise). Report both standalone and consolidated figures separately if the company reports both. Prioritize established business publications for the company\'s home market — Economic Times or Business Standard for India-based companies, the leading business publication for other countries'
+    focus: 'corporate registry information and precise financial data for this company: legal name, registration number, incorporation date, registered address, directors, paid-up capital, and revenue, profit, net worth and borrowings by year as filed or reported. Search the official registry and regulator for the company\'s country first, then business-data sites and the business press. Report standalone and consolidated figures separately if both exist, and state the financial year for every figure'
   },
   {
-    key: 'existing_programs',
-    label: 'Existing Leadership/L&D Infrastructure',
-    focus: 'whether this company already runs named internal leadership-development, management-development, or talent-development programs. Look for specific program names, recent launches, internal academies, or external coaching/assessment partnerships the company has publicly described'
+    key: 'market',
+    label: 'Market Position, Competition & Where It Is Losing Ground',
+    focus: 'where this company stands against named competitors (size, share, rank, growth rate) and any evidence it is losing ground: falling share or sales, lost customers or contracts, margin pressure, a competitor overtaking it, negative analyst or press commentary. Name the competitors and give dates and sources'
+  },
+  {
+    key: 'leadership',
+    label: 'Leadership & Decision-Makers',
+    focus: 'the people who lead this company: founders, CEO/MD, and the heads of the functions relevant to a purchase like this, with tenure, background and any recent changes. State which named person publicly owns or sponsors initiatives relevant to this meeting (for example a transformation, training, or technology programme). Do NOT guess who approves purchases; report only what is publicly stated'
+  },
+  {
+    key: 'named_gaps',
+    label: "Management's Own Statements About Internal Gaps",
+    focus: 'where this company\'s own leaders have publicly acknowledged an internal gap or difficulty (execution, accountability, delegation, speed of decisions, capability, hiring, culture), in investor calls, annual reports, interviews, speeches or posts. Quote or closely paraphrase, naming the speaker, date and source. For a small or private company with no investor calls, use interviews, local press and trade-body statements instead'
   }
 ];
 
 const TOPICS_BATCH_2 = [
   {
-    key: 'named_gaps',
-    label: 'Leadership-Named Execution/Accountability Gaps',
-    focus: 'has this company\'s own leadership — in investor calls, leadership events, annual reports, or executive interviews — explicitly named or referenced an internal gap in execution, accountability, delegation, decision-making speed, or managerial capability? Look for the company\'s own language admitting where it falls short internally, distinct from general business or market challenges'
+    key: 'operational_pain',
+    label: 'Operational & Execution Pain Points',
+    focus: 'specific, evidenced signs of operational or execution difficulty: project delays, cost or schedule overruns, quality or delivery problems, customer complaints, regulatory notices, labour or supply problems, or analyst commentary on execution risk. Search for this directly and specifically, not by inference from other topics. Each item needs a date and a source; a general characterisation without evidence does not count'
+  },
+  {
+    key: 'people',
+    label: 'People & Workforce Signals',
+    focus: 'workforce facts: approximate headcount and its direction, current hiring (what roles, how many, which locations), layoffs, attrition or leadership exits, employer-review ratings and recurring themes, and any statements about skills or capability shortages. Give dates and sources'
+  },
+  {
+    key: 'existing_solutions',
+    label: 'Existing Solutions in the Seller\'s Area',
+    focus: 'what this company already uses or runs in this area: {SELLER_AREA}. Look for named programmes, vendors, partners, platforms, academies or recent launches the company has publicly described, with dates and sources. Say plainly if nothing is public'
   },
   {
     key: 'named_contact',
     label: 'About the Named Contact',
-    focus: 'the specific named contact for this meeting — their own professional background, current role and tenure, public profile, and what their own stated professional focus or current activities suggest about what they might personally care about in this conversation'
-  },
-  {
-    key: 'awards',
-    label: 'Awards & External Recognition',
-    focus: 'any awards, industry recognition, workplace rankings, or external validation this company or the named contact personally has received in the last 2-3 years — useful for a credible, specific opening'
+    focus: 'the specific named contact for this meeting: professional background, current role and tenure, public profile, awards or recognition they personally received, and what their own public activity (talks, posts, articles) shows about their stated focus. If the person cannot be identified with confidence, say so and do not substitute anyone else'
   },
   {
     key: 'named_customers',
-    label: 'Named Customers & Client Relationships',
-    focus: 'any named customers, clients, or business relationships this company publicly discloses — particularly useful if any overlap with how this meeting was arranged'
-  },
-  {
-    key: 'operational_pain',
-    label: 'Operational & Execution Pain Points',
-    focus: 'specific, evidenced signs of operational or execution difficulty — project delays, cost or schedule overruns, quality or delivery issues, customer complaints, or analyst commentary on execution risk. Search for this directly and specifically; do not rely on general impressions from other topics. Sourced, specific evidence matters more than a general characterization'
+    label: 'Customers, Partners & Recognition',
+    focus: 'customers, clients, partners and distributors this company publicly names, and awards, certifications, rankings or recognition the company has received in the last 2-3 years, each with date and source'
   },
   {
     key: 'catch_all',
     label: 'Anything Else Worth Knowing',
-    focus: 'anything else genuinely useful to know about this company or this specific person before the meeting, not captured by the other research areas above (for example: technical staff who interact directly with customers, where relevant). Stay concrete and specific — say plainly if there\'s nothing further worth adding'
+    focus: 'anything else a salesperson would genuinely want to know before this meeting that the other eleven areas do not cover and that is not a repeat of them: for example customer-facing technical or service teams, critical scarce skills, an unusual business model, pending litigation, regulatory exposure, or a recent crisis. Say plainly if there is nothing further'
   }
 ];
 
 const ALL_TOPICS = [...TOPICS_BATCH_1, ...TOPICS_BATCH_2];
+
+// ---------- BUILD 93: country source lists and the seller's own area ----------
+let COUNTRY_SOURCES = {};
+try { COUNTRY_SOURCES = require('./country-sources.json'); } catch (e) { COUNTRY_SOURCES = {}; }
+
+// Text telling the search where to look first for this country. '' when no country or no list (open search).
+function countrySourceBlock(country) {
+  const c = String(country || '').trim();
+  if (!c) return '';
+  const e = COUNTRY_SOURCES[c];
+  if (!e) return `\n\nCountry of the prospect: ${c}. No source list is held for it: use open search, and prefer the official company registry and the leading local business press.`;
+  const bits = [];
+  if (e.registry) bits.push(`Official registry / regulator / exchange: ${e.registry}`);
+  if (e.papers) bits.push(`Business press: ${e.papers}`);
+  if (e.trade) bits.push(`Trade press: ${e.trade}`);
+  return `\n\nCountry of the prospect: ${c}. WHERE TO LOOK FIRST (a starting list, not a limit; some entries may be out of date, so use what works and ignore what does not):\n${bits.join('\n')}${e.notes ? `\nAccess notes: ${String(e.notes).slice(0, 400)}` : ''}`;
+}
+
+const DEFAULT_SELLER_AREA = 'leadership, management and sales-effectiveness training, coaching and development programmes';
+// What the seller sells, taken from their own organisation profile (supplied by their MD). Never hard-wired.
+function sellerAreaFor(member) {
+  try {
+    const txt = member && member.org_context_research ? String(member.org_context_research).replace(/\s+/g, ' ').trim() : '';
+    if (txt && member.selling_company_name) return `${member.selling_company_name} sells: ${txt.slice(0, 450)}`;
+  } catch (e) { /* fall through */ }
+  return DEFAULT_SELLER_AREA;
+}
+
+const EVIDENCE_RULES = `EVIDENCE RULES (apply to every fact you report):
+1. FACTS ONLY. Say what, when and according to whom. Do not interpret, speculate, give opinions or sales advice.
+2. Every item carries a date (month and year at least) and a source name. If a date is not shown, write "date not stated".
+3. SEARCH TWICE WITH DIFFERENT PURPOSES: first the company's own statements and the official sources; then an independent source (business press, regulator, registry, trade press). Prefer the sources listed under the country when given.
+4. If a later figure or event replaces an earlier one (a new funding round, a revised stake, a new CEO), report the LATEST and say it is as of its date. Do not report an older figure as current.
+5. Mark a claim "(single source)" when only one source states it, and "(sources differ)" with both values when they disagree.
+6. Search under EVERY name the company is known by (legal name, brand, former name, parent or group name) found on the website or in your searches.
+7. If nothing is found, say so plainly using the required sentence; never fill space with generic statements.`;
+
 
 function parseWebsites(company_website) {
   if (!company_website) return [];
@@ -517,7 +567,9 @@ async function checkFilings(cin, legalName, brandName) {
   }
 }
 
-async function researchTopicWithRetry(topic, company_name, websites, prospect_name, position, maxRetries = 2, siteInfo = null, extraContext = '') {
+async function researchTopicWithRetry(topic, company_name, websites, prospect_name, position, maxRetries = 2, siteInfo = null, extraContext = '', ctx = {}) {
+  const focusText = String(topic.focus).replace('{SELLER_AREA}', (ctx && ctx.sellerArea) || DEFAULT_SELLER_AREA);
+  const countryBlock = countrySourceBlock(ctx && ctx.country);
   const websiteBlock = websites.length > 0
     ? websites.map((w, i) => `Website ${i + 1}: ${w}`).join('\n')
     : 'Website: (not provided)';
@@ -527,7 +579,7 @@ async function researchTopicWithRetry(topic, company_name, websites, prospect_na
     : '';
 
   // BUILD 91: 2 searches per topic (was 1 in total), so one unlucky search no longer ends a topic.
-  const searchBudget = Math.min(Math.max(websites.length, 1) + 1, 4);
+  const searchBudget = Math.min(Math.max(websites.length, 1) + 2, 4); // BUILD 93: 3 for one site (own statements, then independent source)
 
   // BUILD 91: what was read directly from the company's own website, and anything the salesperson typed.
   const siteBlock = siteInfo && siteInfo.profile
@@ -543,17 +595,19 @@ async function researchTopicWithRetry(topic, company_name, websites, prospect_na
     try {
       const claudeRes = await callClaude({
         model: 'claude-haiku-4-5-20251001',
-        system: `You are doing one small, focused piece of research on a company, as part of a larger presales prep. Your job: use web search to find information specifically about ${topic.focus}.
+        system: `You are doing one small, focused piece of research on a company, as part of a larger presales prep. Your job: use web search to find information specifically about ${focusText}.
 
 ${websites.length > 1 ? `IMPORTANT — multiple websites were given for this company (likely a group of related/sister companies). Search using EACH website listed below individually — do not rely on a single search to cover all of them. Combine what you find across all sites into one answer.\n\n` : ''}CRITICAL — verify identity before reporting anything: ${identityRule} Do not report a different company that merely has a similar or related-sounding name. If a search doesn't turn up a confident match for the specific company/website given, reply with ONLY this sentence: "Could not verify information about the specific company/website given." — never name, list or describe other companies, similar names, or what the searches returned instead, and never add suggestions of where to look. Do NOT substitute or present information about a different company as if it were about this one, even if it seems like a plausible or likely match. A wrong company match is worse than no information at all, and has caused a real, confirmed error before.
 
-Return 2-4 short bulleted markdown facts, only about this specific topic. If search turns up nothing relevant to this specific topic (for a confirmed match on the right company), reply with ONLY "Nothing specific found on this topic." — do not pad with generic statements or drift into other topics. Keep it brief — this is one piece of a larger picture, not the whole report.`,
+Return 3-6 short bulleted markdown facts, only about this specific topic. If search turns up nothing relevant to this specific topic (for a confirmed match on the right company), reply with ONLY "Nothing specific found on this topic." — do not pad with generic statements or drift into other topics. Keep it brief — this is one piece of a larger picture, not the whole report.
+
+${EVIDENCE_RULES}`,
         messages: [{
           role: 'user',
-          content: `Company: ${company_name}\n${websiteBlock}${contactBlock}${siteBlock}${typedBlock}\n\nFind information specifically about: ${topic.focus}`
+          content: `Company: ${company_name}\n${websiteBlock}${contactBlock}${siteBlock}${typedBlock}\n\nFind information specifically about: ${focusText}${countryBlock}`
         }],
         tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: searchBudget }],
-        max_tokens: 700
+        max_tokens: 1000
       });
       const text = cleanTopicText(extractText(claudeRes));
       return { key: topic.key, label: topic.label, ok: true, text: text || 'Nothing specific found on this topic.', model: claudeRes.model, usage: claudeRes.usage };
@@ -630,7 +684,7 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: 'Invalid request.' };
   }
 
-  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token, notes_text, site_text, wildcard_query } = payload;
+  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token, notes_text, site_text, wildcard_query, country } = payload;
 
   if (!report_id || !company_name) {
     return { statusCode: 400, body: 'report_id and company_name are required.' };
@@ -663,6 +717,7 @@ exports.handler = async function (event) {
       try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-research-background', action: 'site_profile', model: siteModel, claudeResponse: { usage: siteUsage } }); } catch (e) { /* cosmetic */ }
     }
     const typedNotes = notes_text ? String(notes_text) : '';
+    const ctx = { country: country ? String(country).slice(0, 80) : '', sellerArea: sellerAreaFor(member) };
 
     // Batch 1 first, fully, before batch 2 starts — this is what the
     // frontend's "digging deeper" transition is actually watching for
@@ -672,7 +727,7 @@ exports.handler = async function (event) {
     let doneCount = 0;
     const totalTopics = TOPICS_BATCH_1.length + TOPICS_BATCH_2.length;
     const runTopic = async (topic) => {
-      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes);
+      const res = await researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes, ctx);
       doneCount += 1;
       const mine = doneCount;
       try { await supaPatch(`reports?id=eq.${report_id}`, { progress_done: mine, progress_total: totalTopics }); } catch (e) { /* progress is cosmetic */ }
@@ -688,7 +743,7 @@ exports.handler = async function (event) {
     // completes (a genuine crash, not just a slow topic), batch 1's
     // real results aren't silently lost.
     await supaPatch(`reports?id=eq.${report_id}`, {
-      structured_data: { research_topics: batch1Sections, batches_complete: 1 }
+      structured_data: { research_topics: batch1Sections, batches_complete: 1, country: ctx.country || null }
     });
 
     const batch2Results = await Promise.allSettled(
@@ -719,7 +774,7 @@ exports.handler = async function (event) {
     if (stillFailed.length > 0) {
       const topicsToRetry = ALL_TOPICS.filter((t) => stillFailed.some((f) => f.key === t.key));
       const retryResults = await Promise.allSettled(
-        topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes))
+        topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes, ctx))
       );
       const retriedSections = retryResults.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
@@ -738,7 +793,7 @@ exports.handler = async function (event) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
         error_message: 'Research failed on every topic.',
-        structured_data: { research_topics: finalSections, batches_complete: 2 }
+        structured_data: { research_topics: finalSections, batches_complete: 2, country: ctx.country || null }
       });
       return { statusCode: 200, body: 'done (failed - all topics)' };
     }
@@ -762,7 +817,7 @@ exports.handler = async function (event) {
       await supaPatch(`reports?id=eq.${report_id}`, {
         status: 'failed',
         error_message: 'INSUFFICIENT_DATA',
-        structured_data: { research_topics: finalSections, batches_complete: 2, insufficient: true, confirmed_count: confirmedCount, site_note: siteNote || null, refunded }
+        structured_data: { research_topics: finalSections, batches_complete: 2, country: ctx.country || null, insufficient: true, confirmed_count: confirmedCount, site_note: siteNote || null, refunded }
       });
       return { statusCode: 200, body: 'done (not enough public data)' };
     }
@@ -796,7 +851,7 @@ exports.handler = async function (event) {
     await supaPatch(`reports?id=eq.${report_id}`, {
       status: 'complete',
       confirmed_facts,
-      structured_data: { research_topics: finalSections, batches_complete: 2, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null, specific_question: specific ? { query: specific.query, ok: specific.ok, found: specific.found, text: specific.text } : null, filing_check: filing ? { outcome: filing.outcome, line: filing.line, source: filing.source, checked_at: filing.checked_at } : null }
+      structured_data: { research_topics: finalSections, batches_complete: 2, country: ctx.country || null, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null, specific_question: specific ? { query: specific.query, ok: specific.ok, found: specific.found, text: specific.text } : null, filing_check: filing ? { outcome: filing.outcome, line: filing.line, source: filing.source, checked_at: filing.checked_at } : null }
     });
 
     return { statusCode: 200, body: 'done' };
@@ -822,3 +877,4 @@ exports.checkFilings = checkFilings;
 exports.researchSpecificQuestion = researchSpecificQuestion;
 exports.specificQuestionSection = specificQuestionSection;
 exports.FILING_MARK = FILING_MARK;
+exports.sellerAreaFor = sellerAreaFor;
