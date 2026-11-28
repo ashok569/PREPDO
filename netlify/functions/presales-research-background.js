@@ -1,4 +1,28 @@
 // PREPDO — presales-research-background.js
+// CURRENT VERSION: BUILD 92b (28 Nov 2026). Newest entry first below.
+// BUILD 92b | 2026-11-28: THE 'SOMETHING SPECIFIC YOU NEED RESEARCHED' BOX NOW WORKS. It was stored and passed here but
+// never read (the promised 13th topic was never built), so it was silently dropped. It now runs as its own research step
+// after the 12 topics: answers exactly what was asked, about whoever is named (not forced onto the prospect company),
+// confirms identity from at least two sources, keeps to professional/public business facts, checks the named party's link
+// to the prospect, treats anything the salesperson typed as a lead to verify, and ALWAYS appears in the facts as
+// "Your specific question: ...", with findings or "nothing found". It never counts toward the not-enough-data rule.
+// BUILD 92 | 2026-11-27: FILING CHECK. When the company number (CIN) is known, the company is unlisted (CIN starts
+// with U) and the registry topic did NOT return real filing or financial facts, the function opens the company's
+// public summary page on Zauba Corp and Tofler (by CIN), checks the page really shows that CIN, and has the page text
+// read into: status, last AGM, last balance sheet filed, paid-up capital. Three outcomes only: CURRENT (filings seen
+// and up to date), CAUTION (the page itself shows non-compliant / struck off / balance sheet older than 20 months),
+// UNCHECKED (could not be read or not shown; says so and never claims a default). A CAUTION is put first in the facts
+// and is shown as a banner on the plan. Never run on a retry; it costs one small AI call only when it runs.
+// BUILD 91c | 2026-11-27: first live test showed topics that said "Nothing specific found" but wrapped it in a
+// long explanation were still shown as sections (and could name other companies such as Groww). Any topic containing
+// that sentence is now classed as nothing found and goes into the one "Not found" line. Also tidies stray bullet
+// and bracket line breaks left by citations.
+// BUILD 91b | 2026-11-27: NOT-ENOUGH-DATA RULE. Each topic is classified: confirmed / nothing found / could not
+// verify. The research counts as sufficient only if the company website was actually read OR at least 4 topics are
+// confirmed. Otherwise NO report is produced: the run is closed with error_message INSUFFICIENT_DATA, the research
+// credits are returned (first 2 such outcomes per prospect per 24 h), and the screen asks the user to re-check the
+// website, paste text from it, or write their own facts. Never lists look-alike companies. The website is tried with
+// an automatic second attempt (with/without www, https/http). A pasted site text (site_text) counts as the website.
 // BUILD 91 | 2026-11-26: WEBSITE FIRST. Before the 12 topics run, the function now opens the company's own
 // website itself (home page plus up to 3 About / Contact / policy pages, which is where the registration
 // number (CIN) usually sits), reads the text, and writes a short verified company profile from it. That
@@ -6,12 +30,6 @@
 // the legal name, CIN, brand, place or domain read from the site. Each topic gets 2 searches (was 1), and is
 // given the CIN found on the site or typed in Notes, plus the typed Notes. If the site cannot be read, the
 // facts say so plainly instead of silently returning "could not verify" for everything.
-// BUILD 91b | 2026-11-27: NOT-ENOUGH-DATA RULE. Each topic is classified: confirmed / nothing found / could not
-// verify. The research counts as sufficient only if the company website was actually read OR at least 4 topics are
-// confirmed. Otherwise NO report is produced: the run is closed with error_message INSUFFICIENT_DATA, the research
-// credits are returned (first 2 such outcomes per prospect per 24 h), and the screen asks the user to re-check the
-// website, paste text from it, or write their own facts. Never lists look-alike companies. The website is tried with
-// an automatic second attempt (with/without www, https/http). A pasted site text (site_text) counts as the website.
 // BUILD 90 | 2026-11-22: writes progress_done / progress_total (migration_v29.sql) as each topic finishes.
 // BUILD 2 | 2026-09-11
 // Real gap fixed, per direct feedback: a genuinely failed topic
@@ -158,14 +176,19 @@ const UNVERIFIED_RE = /could not verify information about the specific company/i
 const NOTHING_RE = /nothing specific found on this topic/i;
 function cleanTopicText(t) {
   // Drop the model's narration lines ("I'll search for ...") that sit before the facts.
-  return String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln)).join('\n').trim();
+  let out = String(t || '').split('\n').filter((ln) => !/^\s*(I'll|I will|Let me)\s+(search|look|find|check|research)/i.test(ln)).join('\n');
+  // Citation markup leaves a bullet alone on its own line, or a bracket on a new line: join them back.
+  out = out.replace(/([•\-*])[ \t]*\n+[ \t]*(?=\S)/g, '$1 ').replace(/\n+[ \t]*(?=\()/g, ' ');
+  return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 // 'confirmed' | 'nothing' | 'unverified' | 'failed'
 function classifyTopic(sec) {
   if (!sec || !sec.ok) return 'failed';
   const t = String(sec.text || '');
   if (UNVERIFIED_RE.test(t)) return 'unverified';
-  if (NOTHING_RE.test(t) && t.replace(/\s+/g, ' ').length < 160) return 'nothing';
+  // The research is told to answer ONLY with that sentence; if it appears at all, the topic has no findings,
+  // however much narration surrounds it (the narration is not a finding and may mention other companies).
+  if (NOTHING_RE.test(t)) return 'nothing';
   if (t.replace(/\s+/g, ' ').trim().length < 25) return 'nothing';
   return 'confirmed';
 }
@@ -357,6 +380,143 @@ Return markdown with exactly these lines:
   };
 }
 
+
+// ---------- BUILD 92b: the salesperson's own specific question ----------
+const SPECIFIC_NOTHING_RE = /nothing specific found on this question/i;
+async function researchSpecificQuestion(query, company_name, websites, siteInfo, typedNotes, prospect_name, maxRetries = 2) {
+  const q = String(query || '').trim().slice(0, 600);
+  if (!q) return null;
+  const websiteBlock = websites && websites.length ? websites.map((w, i) => `Website ${i + 1}: ${w}`).join('\n') : 'Website: (not provided)';
+  const siteBlock = siteInfo && siteInfo.profile ? `\n\nWhat the prospect company's own website says about itself:\n${siteInfo.profile.slice(0, 1500)}` : '';
+  const notesBlock = typedNotes ? `\n\nNotes typed by the salesperson (claims to CHECK, not proven facts):\n${String(typedNotes).slice(0, 700)}` : '';
+  let lastErr = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await callClaude({
+        model: 'claude-haiku-4-5-20251001',
+        system: `You answer ONE specific question for a salesperson preparing for a meeting, using web search. The question may be about a person, firm or topic OTHER than the prospect company, and may ask how that party is linked to the prospect company.
+Rules:
+1. Answer exactly what was asked, nothing else.
+2. For every named person or firm, confirm WHO they are using at least two independent sources (the firm's own site, a regulator or registry, established business press) before reporting. If several people or firms share the name and you cannot tell which is meant, say only: "Could not tell which <name> is meant - several share this name." Do not guess and do not describe the others.
+3. Professional and public business facts only: role, firm, investments, board seats, public statements. Never private life, family, health or personal finances.
+4. If the question concerns how the named party relates to the prospect company (shareholder, investor, lender, partner, board seat, funding rounds), check that link specifically. Give dates and amounts only if a source states them.
+5. Anything the salesperson typed in their notes or in the question is a lead, not proof. If searches confirm it say "confirmed"; if not, say "The salesperson reports X; not confirmed in public sources."
+6. Give 3-6 short bullets, each ending with the source name in brackets. If you find nothing reliable, reply with ONLY: "Nothing specific found on this question."`,
+        messages: [{ role: 'user', content: `Prospect company: ${company_name}\n${websiteBlock}${prospect_name ? `\nMeeting contact: ${prospect_name}` : ''}${siteBlock}${notesBlock}\n\nQUESTION TO ANSWER: ${q}` }],
+        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+        max_tokens: 900
+      });
+      const text = cleanTopicText(extractText(res));
+      const found = !!text && !SPECIFIC_NOTHING_RE.test(text);
+      return { query: q, ok: true, found, text: found ? text : '', model: res.model, usage: res.usage };
+    } catch (err) {
+      lastErr = err;
+      if (is429Error(err) && attempt < maxRetries) { await sleep(2000 * Math.pow(2, attempt)); continue; }
+      break;
+    }
+  }
+  return { query: q, ok: false, found: false, text: '', error: (lastErr && lastErr.message) || 'Unknown error' };
+}
+function specificQuestionSection(sq) {
+  if (!sq || !sq.query) return '';
+  const body = sq.ok
+    ? (sq.found ? sq.text : '*No reliable public information was found to answer this question. If you know something about it, add it to this box.*')
+    : '*This question could not be researched this time (a technical problem). You can add what you know to this box.*';
+  return `### Your specific question: ${sq.query}\n${body}`;
+}
+
+// ---------- BUILD 92: filing check from public registry summary pages (by CIN) ----------
+const FILING_MARK = '⚠ CAUTION — COMPANY FILINGS';
+function slugify(n) {
+  return String(n || '').toUpperCase().replace(/\(P\)/g, 'PRIVATE').replace(/\bPVT\b\.?/g, 'PRIVATE').replace(/\bLTD\b\.?/g, 'LIMITED')
+    .replace(/&/g, 'AND').replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+function legalNameFromProfile(profile) {
+  const m = String(profile || '').match(/Legal \/ registered name:\*\*\s*([^\n]+)/i);
+  const v = m ? m[1].trim() : '';
+  return /not stated/i.test(v) ? '' : v;
+}
+// Is there already a real filing / financial finding in the registry topic?
+function registryHasFilingFacts(sections) {
+  const r = (sections || []).find((x) => x.key === 'registry_financials');
+  if (!r || classifyTopic(r) !== 'confirmed') return false;
+  return /AGM|annual general|balance sheet|annual return|paid.?up|turnover|revenue|net worth|profit|AOC-4|MGT-7/i.test(r.text || '');
+}
+function parseLooseDate(v) {
+  const t = String(v || '').trim();
+  if (!t || /not stated|unknown|n\/a|^-+$/i.test(t)) return null;
+  let m = t.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/);
+  if (m) return new Date(Date.UTC(+m[3], +m[2] - 1, +m[1]));
+  m = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  const d = new Date(t + ' UTC');
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmtDate(d) { return d ? d.toISOString().slice(0, 10) : 'not stated'; }
+
+// Returns { outcome:'current'|'caution'|'unchecked', line, source, usage, model }. Never throws.
+async function checkFilings(cin, legalName, brandName) {
+  const checkedAt = new Date().toISOString().slice(0, 10);
+  const unchecked = (why) => ({ outcome: 'unchecked', source: null, checked_at: checkedAt,
+    line: `Filing status could not be checked from public sources (${why}). This does not mean the company is non-compliant; the filed documents sit on the Ministry of Corporate Affairs portal for a fee. Check there before relying on any financial claim.` });
+  try {
+    const slugs = [...new Set([slugify(legalName), slugify(brandName)].filter(Boolean))];
+    if (!slugs.length) slugs.push('COMPANY');
+    const urls = [];
+    slugs.slice(0, 2).forEach((sl) => {
+      urls.push(`https://www.zaubacorp.com/company/${sl}/${cin}`);
+      urls.push(`https://www.tofler.in/${sl.toLowerCase()}/company/${cin}`);
+    });
+    let page = null; const errs = [];
+    for (const u of urls) {
+      const r = await fetchPageHtml(u, 12000);
+      if (!r.ok) { errs.push(r.error); continue; }
+      const text = htmlToText(r.html);
+      // Identity check: the page must actually show this exact CIN.
+      if (!text.toUpperCase().includes(cin)) { errs.push('page did not show this company number'); continue; }
+      page = { url: r.url, text: text.slice(0, 14000) };
+      break;
+    }
+    if (!page) return unchecked('the registry summary pages could not be opened: ' + (errs[0] || 'no response'));
+
+    const res = await callClaude({
+      model: 'claude-haiku-4-5-20251001',
+      system: `You read the text of a public company-registry summary page and copy out facts. Use ONLY what the text says; never guess. Reply with ONE JSON object and nothing else, with exactly these keys, each a short string, or "not stated" if the page does not show it: "company_status", "active_compliance", "last_agm_date", "last_balance_sheet_date", "paid_up_capital", "authorized_capital", "date_of_incorporation". Dates as shown on the page.`,
+      messages: [{ role: 'user', content: `Company number: ${cin}\n\nPage text:\n${page.text}` }],
+      max_tokens: 400
+    });
+    const raw = extractText(res) || '';
+    let j = null;
+    try { j = JSON.parse((raw.match(/\{[\s\S]*\}/) || [''])[0]); } catch (e) { j = null; }
+    if (!j) return { ...unchecked('the page could not be read into facts'), usage: res.usage, model: res.model };
+
+    const status = String(j.company_status || '');
+    const comp = String(j.active_compliance || '');
+    const agm = parseLooseDate(j.last_agm_date);
+    const bs = parseLooseDate(j.last_balance_sheet_date);
+    const now = new Date();
+    const monthsOld = (d) => (now.getUTCFullYear() - d.getUTCFullYear()) * 12 + (now.getUTCMonth() - d.getUTCMonth());
+    const facts = `Status: ${status || 'not stated'}; compliance flag: ${comp || 'not stated'}; last AGM: ${fmtDate(agm)}; last balance sheet filed: ${fmtDate(bs)}; paid-up capital: ${j.paid_up_capital || 'not stated'} (source: ${page.url}, checked ${checkedAt}).`;
+    const bad = /strike|struck|under process of striking|dissol|liquidat|amalgamat|non.?compliant|inactive|dormant/i;
+    const good = /active/i;
+    if (bad.test(status) || (bad.test(comp) && !/^\s*(active\s*)?compliant/i.test(comp))) {
+      return { outcome: 'caution', source: page.url, checked_at: checkedAt, usage: res.usage, model: res.model,
+        line: `The public registry page shows a compliance problem. ${facts} Verify on the Ministry of Corporate Affairs portal before relying on any financial claim.` };
+    }
+    if (bs && monthsOld(bs) > 20) {
+      return { outcome: 'caution', source: page.url, checked_at: checkedAt, usage: res.usage, model: res.model,
+        line: `The latest balance sheet on the public registry page is more than 20 months old, which suggests annual filings may be overdue. ${facts} This is what the page shows, not a finding of default; verify on the Ministry of Corporate Affairs portal.` };
+    }
+    if (bs && good.test(status + ' ' + comp)) {
+      return { outcome: 'current', source: page.url, checked_at: checkedAt, usage: res.usage, model: res.model,
+        line: `Filings appear up to date on the public registry page. ${facts} The figures themselves are on the Ministry of Corporate Affairs portal for a fee.` };
+    }
+    return { ...unchecked('the page did not show a last balance sheet date or status'), usage: res.usage, model: res.model };
+  } catch (e) {
+    return unchecked('the check failed: ' + String(e.message || e).slice(0, 60));
+  }
+}
+
 async function researchTopicWithRetry(topic, company_name, websites, prospect_name, position, maxRetries = 2, siteInfo = null, extraContext = '') {
   const websiteBlock = websites.length > 0
     ? websites.map((w, i) => `Website ${i + 1}: ${w}`).join('\n')
@@ -413,7 +573,7 @@ Return 2-4 short bulleted markdown facts, only about this specific topic. If sea
   return { key: topic.key, label: topic.label, ok: false, error: lastErr?.message || 'Unknown error' };
 }
 
-function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '') {
+function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '', filing = null, specific = null) {
   const succeeded = sections.filter((s) => s.ok);
   const failed = sections.filter((s) => !s.ok);
 
@@ -432,6 +592,23 @@ function compileFacts(sections, linkedin_paste, siteInfo = null, siteNote = '') 
     confirmed_facts = `### From the company's own website (read directly)\n${siteInfo.profile}\n*Pages read: ${siteInfo.pages.slice(0, 4).join(', ')}*\n\n` + confirmed_facts;
   } else if (siteNote) {
     confirmed_facts = `### Company website\n*${siteNote} Add what you know about the company to this box.*\n\n` + confirmed_facts;
+  }
+
+  // BUILD 92b: the salesperson's own question goes straight after the website section (before the 12 topics).
+  const spSec = specificQuestionSection(specific);
+  if (spSec) {
+    const marker = /^### From the company's own website[\s\S]*?\n\n(?=### )/;
+    if (marker.test(confirmed_facts)) confirmed_facts = confirmed_facts.replace(marker, (mm) => mm + spSec + '\n\n');
+    else confirmed_facts = spSec + '\n\n' + confirmed_facts;
+  }
+
+  // BUILD 92: filing check result. A caution goes FIRST so it reaches the plan; the other outcomes sit after the website section.
+  if (filing && filing.line) {
+    if (filing.outcome === 'caution') {
+      confirmed_facts = `### ${FILING_MARK}\n${filing.line}\n\n` + confirmed_facts;
+    } else {
+      confirmed_facts += `\n\n### Company filings (public registry summary)\n${filing.line}`;
+    }
   }
 
   if (linkedin_paste && linkedin_paste.trim()) {
@@ -453,7 +630,7 @@ exports.handler = async function (event) {
     return { statusCode: 400, body: 'Invalid request.' };
   }
 
-  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token, notes_text, site_text } = payload;
+  const { report_id, company_name, company_website, linkedin_paste, prospect_name, position, session_token, notes_text, site_text, wildcard_query } = payload;
 
   if (!report_id || !company_name) {
     return { statusCode: 400, body: 'report_id and company_name are required.' };
@@ -590,12 +767,36 @@ exports.handler = async function (event) {
       return { statusCode: 200, body: 'done (not enough public data)' };
     }
 
-    const confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote);
+    // BUILD 92: filing check, only when a CIN is known, the company is unlisted, and the registry topic gave no real filing facts.
+    let filing = null;
+    try {
+      const cin = (siteInfo && siteInfo.cins && siteInfo.cins[0]) || '';
+      if (cin && /^U/i.test(cin) && !registryHasFilingFacts(finalSections)) {
+        const legal = legalNameFromProfile(siteInfo && siteInfo.profile);
+        filing = await checkFilings(cin.toUpperCase(), legal, company_name);
+        if (filing.usage) {
+          try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-research-background', action: 'filing_check', model: filing.model, claudeResponse: { usage: filing.usage } }); } catch (e) { /* cosmetic */ }
+        }
+      }
+    } catch (e) { filing = null; }
+
+    // BUILD 92b: the salesperson's own specific question, if one was entered at setup.
+    let specific = null;
+    try {
+      if (wildcard_query && String(wildcard_query).trim()) {
+        specific = await researchSpecificQuestion(wildcard_query, company_name, websites, siteInfo, typedNotes, prospect_name);
+        if (specific && specific.usage) {
+          try { await logApiUsage({ member_id: member.id, report_id, function_name: 'presales-research-background', action: 'specific_question', model: specific.model, claudeResponse: { usage: specific.usage } }); } catch (e) { /* cosmetic */ }
+        }
+      }
+    } catch (e) { specific = null; }
+
+    const confirmed_facts = compileFacts(finalSections, linkedin_paste, siteInfo, siteNote, filing, specific);
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       status: 'complete',
       confirmed_facts,
-      structured_data: { research_topics: finalSections, batches_complete: 2, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null }
+      structured_data: { research_topics: finalSections, batches_complete: 2, site_profile: siteInfo ? { profile: siteInfo.profile, cins: siteInfo.cins, pages: siteInfo.pages } : null, site_note: siteNote || null, specific_question: specific ? { query: specific.query, ok: specific.ok, found: specific.found, text: specific.text } : null, filing_check: filing ? { outcome: filing.outcome, line: filing.line, source: filing.source, checked_at: filing.checked_at } : null }
     });
 
     return { statusCode: 200, body: 'done' };
@@ -617,3 +818,7 @@ exports.researchTopicWithRetry = researchTopicWithRetry;
 exports.compileFacts = compileFacts;
 exports.buildSiteProfile = buildSiteProfile;
 exports.classifyTopic = classifyTopic;
+exports.checkFilings = checkFilings;
+exports.researchSpecificQuestion = researchSpecificQuestion;
+exports.specificQuestionSection = specificQuestionSection;
+exports.FILING_MARK = FILING_MARK;
