@@ -1,4 +1,5 @@
 // PREPDO — presales-research.js
+// BUILD 13 | 2026-11-28 (ships in the Build 93 package): the retry gives the re-run topics the prospect's country and the seller's own area, like the main run.
 // BUILD 12 | 2026-11-27: keeps the saved filing-check result and the saved specific-question answer (Build 92/92b) when the facts are rebuilt after a retry.
 // BUILD 11 | 2026-11-27: the retry now gives the re-run topics the same website profile and typed notes the main
 // research used (saved in structured_data.site_profile), and compiles the facts with the Build 91b rules.
@@ -26,7 +27,7 @@
 // ones actually retried.
 
 const { getMemberFromSession, supaGet, supaPatch, logApiUsage, respond, handleOptions, isInScope } = require('./_lib.js');
-const { researchTopicWithRetry, compileFacts, ALL_TOPICS } = require('./presales-research-background.js');
+const { researchTopicWithRetry, compileFacts, ALL_TOPICS, sellerAreaFor } = require('./presales-research-background.js');
 
 function parseWebsites(company_website) {
   if (!company_website) return [];
@@ -87,7 +88,7 @@ exports.handler = async function (event) {
     const topicsToRetry = ALL_TOPICS.filter((t) => failedTopics.some((f) => f.key === t.key));
 
     const retriedResults = await Promise.allSettled(
-      topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes))
+      topicsToRetry.map((topic) => researchTopicWithRetry(topic, company_name, websites, prospect_name, position, 2, siteInfo, typedNotes, { country: (report.structured_data && report.structured_data.country) || '', sellerArea: sellerAreaFor(member) }))
     );
     const retriedSections = retriedResults.map((r) => (r.status === 'fulfilled' ? r.value : { ok: false, error: r.reason?.message || 'Unknown error' }));
 
