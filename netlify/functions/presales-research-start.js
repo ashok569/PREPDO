@@ -1,4 +1,6 @@
 // PREPDO — presales-research-start.js
+// BUILD 93 | 2026-11-28: also accepts the prospect's country (chosen in the app) and passes it on, so the research looks in that
+// country's registry and business press first. Nothing else changes.
 // BUILD 91b | 2026-11-27: also accepts site_text (text the salesperson pasted from the company's website, for the
 // second try after 'not enough public data') and passes it on. Nothing else changes.
 // BUILD 91 | 2026-11-26: also passes the prospect's Notes and Meeting objective (notes_text) to the research, so a
@@ -60,6 +62,7 @@ exports.handler = async function (event) {
   }
 
   const { session_token, company_name, company_website, linkedin_paste, prospect_name, position, prospect_id } = payload;
+  const country = typeof payload.country === 'string' ? payload.country.trim().slice(0, 80) : '';
   const site_text = typeof payload.site_text === 'string' ? payload.site_text.slice(0, 20000) : null;
 
   let member = null;
@@ -133,6 +136,7 @@ exports.handler = async function (event) {
           wildcard_query,
           notes_text,
           site_text,
+          country,
           session_token
         })
       });
