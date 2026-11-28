@@ -1,4 +1,5 @@
 // PREPDO — presales-research.js
+// BUILD 12 | 2026-11-27: keeps the saved filing-check result and the saved specific-question answer (Build 92/92b) when the facts are rebuilt after a retry.
 // BUILD 11 | 2026-11-27: the retry now gives the re-run topics the same website profile and typed notes the main
 // research used (saved in structured_data.site_profile), and compiles the facts with the Build 91b rules.
 // BUILD 10 | 2026-09-11
@@ -102,7 +103,7 @@ exports.handler = async function (event) {
     const retriedByKey = Object.fromEntries(retriedSections.map((r) => [r.key, r]));
     const mergedTopics = existingTopics.map((t) => retriedByKey[t.key] || t);
 
-    const confirmed_facts = compileFacts(mergedTopics, linkedin_paste, siteInfo, siteNote);
+    const confirmed_facts = compileFacts(mergedTopics, linkedin_paste, siteInfo, siteNote, (report.structured_data && report.structured_data.filing_check) || null, (report.structured_data && report.structured_data.specific_question) || null);
 
     await supaPatch(`reports?id=eq.${report_id}`, {
       confirmed_facts,
